@@ -1,5 +1,4 @@
 from mastodon import Mastodon
-from colored import fg, bg, attr
 
 import re
 import time
@@ -26,7 +25,6 @@ def pprint_result(result, scrollback, result_prefix = ""):
             pprint_result(sub_result, scrollback, sub_result_prefix)
         return
         
-        
     if result_prefix != "":
         result_prefix = "#" + result_prefix.ljust(4)
         
@@ -37,12 +35,12 @@ def pprint_result(result, scrollback, result_prefix = ""):
             
             time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
-            scrollback.print(fg('green') + result_prefix + fg('yellow') + result["account"]["acct"]  + " @ " + fg('red') + time_formatted)
-            scrollback.print(content_clean)
+            scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+            scrollback.print(theme["text"] + content_clean)
             scrollback.print("<#NEW_LINE#>")
             return
         
-    scrollback.print(pprint.pformat(result))
+    scrollback.print(theme["text"] + pprint.pformat(result))
 
 # Scrollback column
 class Scrollback:
@@ -54,7 +52,8 @@ class Scrollback:
         self.title = title
         self.offset = offset + 1
         self.width = width
-
+        self.active = False
+        
     # Print to scrollback
     def print(self, x):
         self.scrollback.extend(x.split("\n"))
@@ -77,13 +76,19 @@ class Scrollback:
         
         # Move to start and draw header
         cursor_to(self.offset + 1, 1)
-        sys.stdout.write(self.title)
+        title_style = theme["titles"]
+        if self.active:
+            title_style = theme["active"]
+        sys.stdout.write(title_style + self.title)
         
         cursor_to(self.offset, 2)
+        line_style = theme["lines"]
+        if self.active:
+            line_style = theme["active"]
         if print_width < self.width:
-            draw_line(print_width + 1)
+            draw_line(line_style, print_width + 1)
         else:
-            draw_line(print_width)
+            draw_line(line_style, print_width)
             
         # Do we need to update the actual scrollback area?
         if self.dirty == False:
@@ -91,9 +96,13 @@ class Scrollback:
         self.dirty = False
         
         # If so, figure out contents
+        text_width = max(print_width - 2, 0)
+        if text_width == 0:
+            return
+        
         wrapped_lines = []
         for line in self.scrollback:
-            lines = ansiwrap.wrap(line, print_width)
+            lines = ansiwrap.wrap(line, text_width)
             wrapped_lines.extend(lines)
         
         # Update scrollback position, in case it needs updating
@@ -107,13 +116,13 @@ class Scrollback:
         # Figure out which parts to draw
         print_end = min(self.pos, len(wrapped_lines))
         print_start = max(print_end - print_height, 0)
-        
         print_lines = wrapped_lines[print_start:print_end]
         
         # Draw scrollback area
         for line_pos, line in enumerate(print_lines):
             cursor_to(self.offset, line_pos + 3)
             clear_line(print_width)
+            cursor_to(self.offset + 1, line_pos + 3)
             if line == "<#NEW_LINE#>":
                 sys.stdout.write("")
             else:
@@ -125,6 +134,7 @@ buffers = [
     Scrollback("local", 102, 50),
     Scrollback("scratch", 153, 10000),
 ]
+buffers[2].active = True
 
 watched = [
 ]
@@ -135,15 +145,21 @@ def get_title():
     title_str = ""
     for index, character in enumerate("tootmage"):
         r, g, b = colorsys.hsv_to_rgb((index + title_offset) / 30.0, 1.0, 1.0)
-        title_str = title_str + rgb(r, g, b) + character
-    return title_str + attr('reset')
+        title_str = title_str + ansi_rgb(r, g, b) + character
+    return title_str
 
 # ANSI escape and other output convenience functions
-def rgb(r, g, b):
+def ansi_rgb(r, g, b):
     r = int(round(r * 255.0))
     g = int(round(g * 255.0))
     b = int(round(b * 255.0))
     return "\33[38;2;{};{};{}m".format(str(r), str(g), str(b))
+
+def ansi_clear():
+    return "\33[2J"
+
+def ansi_reset():
+    return "\33[m"
 
 def cursor_save():
     sys.stdout.write('\0337')
@@ -168,25 +184,50 @@ def clear_line(clear_len = 0):
 def clear_screen():
     sys.stdout.write('\033[2J')
 
-def draw_line(line_len):
-    sys.stdout.write("═" * line_len)
+def draw_line(style, line_len):
+    sys.stdout.write(style + ("═" * line_len))
     
 # Update application (other than prompt line, that's prompt-toolkits job)
+last_rows = 0
+last_cols = 0
 def screen_update_once():
+    global last_rows
+    global last_cols
+    
     # Grab size of screen
     cols, rows = shutil.get_terminal_size()
     
     # Store cursor and print header
     cursor_save()
+    
+    # Do we need a full redisplay? Initiate that, if so.
+    if rows != last_rows or cols != last_cols:
+        sys.stdout.write(ansi_clear())
+        draw_prompt_separator()
+        for scrollback in buffers:
+            scrollback.dirty = True
+        last_rows = rows
+        last_cols = cols
+        
+    # Draw title
     cursor_to(cols - len("tootmage") + 1, 0)
     sys.stdout.write(get_title() + "\n")
     
+    # Draw buffers
     print_height = rows - 4
     for scrollback in buffers:
         scrollback.draw(print_height, cols)
     
     cursor_restore()
     sys.stdout.flush()
+
+# Draw the little line above the prompt
+def draw_prompt_separator():
+    cols, rows = shutil.get_terminal_size()
+    cursor_to(0, rows - 1)
+    draw_line(theme["lines"], cols)
+    cursor_to(0, rows)
+    clear_line()
 
 # Draw/Update loop
 def app_update(context):
@@ -209,18 +250,15 @@ def app_update(context):
 # Print prompt and read a single line
 def read_line(history, key_registry):
     cursor_reset()
-    
-    cols, rows = shutil.get_terminal_size()
-    cursor_to(0, rows - 1)
-    draw_line(cols)
-    cursor_to(0, rows)
-    clear_line()
+    draw_prompt_separator()
+    sys.stdout.write(theme["prompt"]) # TODO FIXME
     input_line = prompt_toolkit.prompt(
         ">>> ", 
         wrap_lines = False,
         eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update),
         history = history,
-        key_bindings_registry = key_registry
+        key_bindings_registry = key_registry,
+        true_color=True
     )
     sys.stdout.write('\033[1T')
     screen_update_once()
@@ -234,7 +272,7 @@ def eval_command(orig_command, command, scrollback, interactive = True):
     
     if interactive:
         scrollback.print("<#NEW_LINE#>")
-        scrollback.print("> " + orig_command)
+        scrollback.print(theme["text"] + "> " + orig_command)
         
     try:
         result_ns = {}
@@ -297,6 +335,17 @@ m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secre
 watched.append([m.timeline, 0, 20, buffers[0]])
 watched.append([m.notifications, 0, 20, buffers[1]])
 watched.append([m.timeline_local, 0, 20, buffers[2]])
+
+theme = {
+    "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
+    "ids": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
+    "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
+    "names": ansi_rgb(1.0, 1.0, 1.0),
+    "lines": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
+    "titles": ansi_rgb(1.0, 1.0, 1.0),
+    "prompt": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
+    "active": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
+}
 
 # Start up and run REPL
 clear_screen()
