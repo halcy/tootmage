@@ -1,4 +1,4 @@
-from mastodon import Mastodon
+from mastodon import Mastodon, StreamListener
 
 import re
 import time
@@ -12,17 +12,55 @@ import prompt_toolkit
 import threading
 import colorsys
 
-# Mastodon API dict pretty printer
-def pprint_result(result, scrollback, result_prefix = ""):
+# Mastodon API dict pretty printers
+def pprint_status(result_prefix, result, scrollback):
+    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["content"])
+    content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
+    
+    time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
+    status_icon = glyphs[result["visibility"]]
+    
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)  
+    scrollback.print("<#RIGHT#>" + theme["visibility"] + status_icon)    
+    scrollback.print(theme["text"] + content_clean + " ")
+    scrollback.print("<#NEW_LINE#>")
+    return
+
+def pprint_reblog(result_prefix, result, scrollback):
+    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["content"])
+    content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
+    
+    time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
+
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+    scrollback.print("   " + theme["reblog"] + glyphs["reblog"] + " " + theme["names"] + result["reblog"]["account"]["acct"])  
+    scrollback.print(theme["text"] + content_clean)
+    scrollback.print("<#NEW_LINE#>")
+    return
+
+def pprint_notif(result_prefix, result, scrollback):
+    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["status"]["content"])
+    content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
+
+    time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
+
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+    scrollback.print("   " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text"] + content_clean)
+    scrollback.print("<#NEW_LINE#>")
+    return
+
+def pprint_follow(result_prefix, result, scrollback):
+    time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
+
+    scrollback.print(theme["ids"] + result_prefix + theme["follow"] + glyphs["follow"] + " " + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+    scrollback.print("<#NEW_LINE#>")
+    return
+
+def pprint_result(result, scrollback, result_prefix = "", not_pretty = False):
     if isinstance(result, list):
         for num, sub_result in enumerate(reversed(result)):
-            
-            sub_result_prefix = result_prefix
-            if result_prefix != "":
-                sub_result_prefix += "-"
-            sub_result_prefix += str(len(result) - num - 1)
-            
-            pprint_result(sub_result, scrollback, sub_result_prefix)
+            sub_result_prefix = str(len(result) - num - 1)
+            pprint_result(sub_result, scrollback, sub_result_prefix, not_pretty)
         return
         
     if result_prefix != "":
@@ -30,19 +68,38 @@ def pprint_result(result, scrollback, result_prefix = ""):
         
     if isinstance(result, dict):
         if "content" in result:
-            content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["content"])
-            content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
-            
-            time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
-
-            scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-            scrollback.print(theme["text"] + content_clean)
-            scrollback.print("<#NEW_LINE#>")
+            if "reblog" in result and result["reblog"] != None:
+                pprint_reblog(result_prefix, result, scrollback)
+            else:
+                pprint_status(result_prefix, result, scrollback)
             return
         
+        if "type" in result:
+            if result["type"] == "mention":
+                pprint_status(result_prefix, result["status"], scrollback)
+                return
+            
+            if result["type"] in ["reblog", "favourite"]:
+                pprint_notif(result_prefix, result, scrollback)
+                return
+            
+            if result["type"] == "follow":
+                pprint_follow(result_prefix, result, scrollback)
+                return
+            
     scrollback.print(theme["text"] + pprint.pformat(result))
 
-# Scrollback column
+# Combines two strings, trying to align one left and the other right,
+# while wrapping
+def align(left_part, right_part, width):
+    for i in reversed(range(width)):
+        aligned = left_part + (" " * i) + right_part
+        result = ansiwrap.wrap(aligned, width)
+        if len(result) == 1:
+            return result
+    return ansiwrap.wrap(left_part + " " + right_part)
+
+# Scrollback column with internal "result history" buffer
 class Scrollback:
     def __init__(self, title, offset, width):
         self.scrollback = []
@@ -53,6 +110,17 @@ class Scrollback:
         self.offset = offset + 1
         self.width = width
         self.active = False
+        self.result_history = []
+        self.result_counter = -1
+        
+    # Append to result history and print
+    def add_result(self, result):
+        self.result_counter = (self.result_counter + 1) % 1000
+        if len(self.result_history) > self.result_counter:
+            self.result_history[self.result_counter] = result
+        else:
+            self.result_history.append(result)
+        pprint_result(result, self, str(self.result_counter))
         
     # Print to scrollback
     def print(self, x):
@@ -102,8 +170,13 @@ class Scrollback:
         
         wrapped_lines = []
         for line in self.scrollback:
-            lines = ansiwrap.wrap(line, text_width)
-            wrapped_lines.extend(lines)
+            if line.startswith("<#RIGHT#>"):
+                line = line[9:]
+                left_part = wrapped_lines.pop()
+                wrapped_lines.extend(align(left_part, line, text_width))
+            else:
+                lines = ansiwrap.wrap(line, text_width)
+                wrapped_lines.extend(lines)
         
         # Update scrollback position, in case it needs updating
         self.pos = max(self.pos, print_height)
@@ -137,6 +210,9 @@ buffers = [
 buffers[2].active = True
 
 watched = [
+]
+
+watched_streams = [
 ]
 
 # Return app title, possibly animated
@@ -327,24 +403,76 @@ def scroll_down(args, how_far = 2):
     buffers[-1].scroll(-2)
 
 
+# Function that adds a watcher
+def watch(function, scrollback, every_s):
+    watched.append([function, 0, every_s, scrollback])
+
+# Class that just calls a callback for stream events
+class EventCollector(StreamListener):
+    def __init__(self, event_handler = None, notification_event_handler = None):
+        super(EventCollector, self).__init__()
+        self.event_handler = event_handler
+        self.notification_event_handler = notification_event_handler
+        
+    def on_update(self, status):
+        if self.event_handler != None:
+            self.event_handler(status)
+            
+    def on_notification(self, notification):
+        if self.notification_event_handler != None:
+            self.notification_event_handler(notification)
+        
+# Watcher that watches a stream
+def watch_stream(function, scrollback = None, scrollback_notifications = None): # TODO call this in a thread
+    def watch_stream_internal(function, scrollback = None, scrollback_notifications = None):
+        event_handler = None
+        if scrollback != None:
+            event_handler = scrollback.add_result
+        
+        notification_event_handler = None
+        if scrollback_notifications != None:
+            notification_event_handler = scrollback_notifications.add_result
+            
+        result_collector = EventCollector(event_handler, notification_event_handler)
+        watched_streams.append(function(result_collector, async = True))
+        
+    watch_start_thread = threading.Thread(target = watch_stream_internal, name = "start_watch", args = (function, scrollback, scrollback_notifications))
+    watch_start_thread.start()
+    
 # Preamble: Create mastodon object
 MASTODON_BASE_URL = "https://icosahedron.website"
 m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secret', api_base_url = MASTODON_BASE_URL)
 
 # Column contents
-watched.append([m.timeline, 0, 20, buffers[0]])
-watched.append([m.notifications, 0, 20, buffers[1]])
-watched.append([m.timeline_local, 0, 20, buffers[2]])
-
+#watch(m.timeline, buffers[0]], 60)
+#watch(m.notifications, buffers[1], 60)
+#watch(m.timeline_local, buffers[2], 60)
+watch_stream(m.stream_user, buffers[0], buffers[1])
+watch_stream(m.stream_local, buffers[2])
+    
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
     "ids": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
-    "names": ansi_rgb(1.0, 1.0, 1.0),
+    "names": ansi_rgb(1.0, 1.0, 0.5),
     "lines": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "titles": ansi_rgb(1.0, 1.0, 1.0),
     "prompt": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
     "active": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
+    "reblog": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
+    "follow": ansi_rgb(128.0 / 255.0, 128.0 / 255.0, 255.0 / 255.0),
+    "favourite": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 128.0 / 255.0),
+    "visibility": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
+}
+
+glyphs = {
+    'reblog': '\U0000267a', # recycling symbol
+    'favourite': '\U00002605', # star
+    'follow': '➜', # arrow
+    'public': '\U0001f30e', # globe
+    'unlisted': '\U0001f47b', # ghost
+    'private': '\U0001f512', # lock
+    'direct': '\U0001f4e7', # envelope
 }
 
 # Start up and run REPL
@@ -352,6 +480,7 @@ clear_screen()
 cols, rows = shutil.get_terminal_size()
 cursor_to(0, rows)
 history = prompt_toolkit.history.FileHistory(".tootmage_history")
+
 while True:
     orig_command = read_line(history, key_registry)
     command = orig_command
