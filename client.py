@@ -11,6 +11,10 @@ import ansiwrap
 import prompt_toolkit
 import threading
 import colorsys
+import os
+
+prompt_app = None
+prompt_cli = None
 
 # Mastodon API dict pretty printers
 def pprint_status(result_prefix, result, scrollback):
@@ -97,7 +101,7 @@ def align(left_part, right_part, width):
         result = ansiwrap.wrap(aligned, width)
         if len(result) == 1:
             return result
-    return ansiwrap.wrap(left_part + " " + right_part)
+    return ansiwrap.wrap(left_part + " " + right_part, width)
 
 # Scrollback column with internal "result history" buffer
 class Scrollback:
@@ -208,7 +212,7 @@ class Scrollback:
                 sys.stdout.write("")
             else:
                 sys.stdout.write(line)
-
+    
 buffers = [
     Scrollback("home", 0, 50),
     Scrollback("notifications", 51, 50),
@@ -229,7 +233,7 @@ title_dirty = True
 def get_title():
     title_str = ""
     for index, character in enumerate("tootmage"):
-        r, g, b = colorsys.hsv_to_rgb((index + title_offset) / 30.0, 1.0, 1.0)
+        r, g, b = colorsys.hsv_to_rgb((index * 1.5 + title_offset) / 30.0, 0.8, 1.0)
         title_str = title_str + ansi_rgb(r, g, b) + character
     return title_str
 
@@ -268,6 +272,7 @@ def clear_line(clear_len = 0):
 
 def clear_screen():
     sys.stdout.write('\033[2J')
+    sys.stdout.flush()
 
 def draw_line(style, line_len):
     sys.stdout.write(style + ("═" * line_len))
@@ -320,8 +325,6 @@ def draw_prompt_separator():
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows - 1)
     draw_line(theme["lines"], cols)
-    cursor_to(0, rows)
-    clear_line()
 
 # Draw/Update loop
 def app_update(context):
@@ -330,7 +333,7 @@ def app_update(context):
     while not context.input_is_ready():
         thread_names = map(lambda x: x.name, threading.enumerate())
         if "command_runner" in thread_names:
-            title_offset += 0.3
+            title_offset += 3.0
             title_dirty = True
             
         for watched_expr in watched:
@@ -338,23 +341,38 @@ def app_update(context):
             if time.time() - last_exec > exec_every:
                 watched_expr[1] = time.time()
                 eval_command_thread("", funct, scrollback, False)
-                
-        screen_update_once()        
-        time.sleep(0.005)
+        
+        screen_update_once()
+        if prompt_cli != None:
+            #os.system("stty -echo")
+            cols, rows = shutil.get_terminal_size()
+            cursor_to(0, rows)
+            sys.stdout.write(theme["prompt"] + ">>> ")
+            prompt_cli.renderer.reset()
+            prompt_cli._redraw()
+        time.sleep(0.05)
+        
+    # Tell prompt-toolkit to redraw whenever it has the chance
+    #if prompt_app != None:
+    #    prompt_app.invalidate()
 
 # Print prompt and read a single line
 def read_line(history, key_registry):
-    cursor_reset()
-    draw_prompt_separator()
-    sys.stdout.write(theme["prompt"]) # TODO FIXME
-    input_line = prompt_toolkit.prompt(
-        ">>> ", 
+    global prompt_app
+    global prompt_cli
+    #cursor_reset()
+    #draw_prompt_separator() # TODO redraw me
+    cols, rows = shutil.get_terminal_size()
+    cursor_to(0, rows)
+    prompt_app = prompt_toolkit.shortcuts.create_prompt_application( 
         wrap_lines = False,
-        eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update),
         history = history,
         key_bindings_registry = key_registry,
-        true_color=True
+        extra_input_processors = [prompt_toolkit.layout.processors.BeforeInput.static("")]
     )
+    eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update)
+    prompt_cli = prompt_toolkit.CommandLineInterface(application=prompt_app, eventloop=eventloop)
+    input_line = prompt_cli.run().text
     for scrollback in buffers:
         scrollback.full_redraw = True
     sys.stdout.write('\033[1T')        
@@ -499,7 +517,6 @@ glyphs = {
 # Start up and run REPL
 clear_screen()
 cols, rows = shutil.get_terminal_size()
-cursor_to(0, rows)
 history = prompt_toolkit.history.FileHistory(".tootmage_history")
 
 while True:
