@@ -112,7 +112,12 @@ class Scrollback:
         self.active = False
         self.result_history = []
         self.result_counter = -1
-        
+        self.full_redraw = True
+    
+    # Do I need any redrawing?
+    def needs_redraw(self):
+        return self.full_redraw or self.dirty
+    
     # Append to result history and print
     def add_result(self, result):
         self.result_counter = (self.result_counter + 1) % 1000
@@ -142,21 +147,24 @@ class Scrollback:
         if print_width < 0:
             return
         
-        # Move to start and draw header
-        cursor_to(self.offset + 1, 1)
-        title_style = theme["titles"]
-        if self.active:
-            title_style = theme["active"]
-        sys.stdout.write(title_style + self.title)
-        
-        cursor_to(self.offset, 2)
-        line_style = theme["lines"]
-        if self.active:
-            line_style = theme["active"]
-        if print_width < self.width:
-            draw_line(line_style, print_width + 1)
-        else:
-            draw_line(line_style, print_width)
+        if self.full_redraw:
+            # Move to start and draw header
+            cursor_to(self.offset + 1, 1)
+            title_style = theme["titles"]
+            if self.active:
+                title_style = theme["active"]
+            sys.stdout.write(title_style + self.title)
+            
+            cursor_to(self.offset, 2)
+            line_style = theme["lines"]
+            if self.active:
+                line_style = theme["active"]
+            if print_width < self.width:
+                draw_line(line_style, print_width + 1)
+            else:
+                draw_line(line_style, print_width)
+            self.full_redraw = False
+            self.dirty = True
             
         # Do we need to update the actual scrollback area?
         if self.dirty == False:
@@ -217,6 +225,7 @@ watched_streams = [
 
 # Return app title, possibly animated
 title_offset = 0
+title_dirty = True
 def get_title():
     title_str = ""
     for index, character in enumerate("tootmage"):
@@ -273,29 +282,38 @@ def screen_update_once():
     # Grab size of screen
     cols, rows = shutil.get_terminal_size()
     
-    # Store cursor and print header
-    cursor_save()
-    
     # Do we need a full redisplay? Initiate that, if so.
     if rows != last_rows or cols != last_cols:
         sys.stdout.write(ansi_clear())
         draw_prompt_separator()
         for scrollback in buffers:
-            scrollback.dirty = True
+            scrollback.full_redraw = True
         last_rows = rows
         last_cols = cols
-        
-    # Draw title
-    cursor_to(cols - len("tootmage") + 1, 0)
-    sys.stdout.write(get_title() + "\n")
     
-    # Draw buffers
-    print_height = rows - 4
+    # Check if we have anything to draw
+    need_redraw = False
     for scrollback in buffers:
-        scrollback.draw(print_height, cols)
+        if scrollback.needs_redraw():
+            need_redraw = True
+    if title_dirty:
+        need_redraw = True
     
-    cursor_restore()
-    sys.stdout.flush()
+    if need_redraw:
+        # Store cursor and print header
+        cursor_save()
+        
+        # Draw title
+        cursor_to(cols - len("tootmage") + 1, 0)
+        sys.stdout.write(get_title() + "\n")
+        
+        # Draw buffers
+        print_height = rows - 4
+        for scrollback in buffers:
+            scrollback.draw(print_height, cols)
+        
+        cursor_restore()
+        sys.stdout.flush()
 
 # Draw the little line above the prompt
 def draw_prompt_separator():
@@ -313,7 +331,8 @@ def app_update(context):
         thread_names = map(lambda x: x.name, threading.enumerate())
         if "command_runner" in thread_names:
             title_offset += 0.3
-        
+            title_dirty = True
+            
         for watched_expr in watched:
             funct, last_exec, exec_every, scrollback = watched_expr
             if time.time() - last_exec > exec_every:
@@ -321,7 +340,7 @@ def app_update(context):
                 eval_command_thread("", funct, scrollback, False)
                 
         screen_update_once()        
-        time.sleep(0.01)
+        time.sleep(0.005)
 
 # Print prompt and read a single line
 def read_line(history, key_registry):
@@ -336,7 +355,9 @@ def read_line(history, key_registry):
         key_bindings_registry = key_registry,
         true_color=True
     )
-    sys.stdout.write('\033[1T')
+    for scrollback in buffers:
+        scrollback.full_redraw = True
+    sys.stdout.write('\033[1T')        
     screen_update_once()
     sys.stdout.flush()
     return(input_line)
