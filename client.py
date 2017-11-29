@@ -7,7 +7,7 @@ import html
 import pprint
 import sys
 import shutil
-import ansiwrap
+import termwrap
 import prompt_toolkit
 import threading
 import colorsys
@@ -24,10 +24,9 @@ def pprint_status(result_prefix, result, scrollback):
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
     
-    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)  
-    scrollback.print("<#RIGHT#>" + theme["visibility"] + status_icon)    
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted, theme["visibility"] + status_icon) 
     scrollback.print(theme["text"] + content_clean + " ")
-    scrollback.print("<#NEW_LINE#>")
+    scrollback.print("")
     return
 
 def pprint_reblog(result_prefix, result, scrollback):
@@ -39,7 +38,7 @@ def pprint_reblog(result_prefix, result, scrollback):
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
     scrollback.print("   " + theme["reblog"] + glyphs["reblog"] + " " + theme["names"] + result["reblog"]["account"]["acct"])  
     scrollback.print(theme["text"] + content_clean)
-    scrollback.print("<#NEW_LINE#>")
+    scrollback.print("")
     return
 
 def pprint_notif(result_prefix, result, scrollback):
@@ -50,14 +49,14 @@ def pprint_notif(result_prefix, result, scrollback):
 
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
     scrollback.print("   " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text"] + content_clean)
-    scrollback.print("<#NEW_LINE#>")
+    scrollback.print("")
     return
 
 def pprint_follow(result_prefix, result, scrollback):
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     scrollback.print(theme["ids"] + result_prefix + theme["follow"] + glyphs["follow"] + " " + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-    scrollback.print("<#NEW_LINE#>")
+    scrollback.print("")
     return
 
 def pprint_result(result, scrollback, result_prefix = "", not_pretty = False):
@@ -96,12 +95,13 @@ def pprint_result(result, scrollback, result_prefix = "", not_pretty = False):
 # Combines two strings, trying to align one left and the other right,
 # while wrapping
 def align(left_part, right_part, width):
-    for i in reversed(range(width)):
+    max_spaces = max(width - (termwrap.ansilen_unicode(left_part) + termwrap.ansilen_unicode(right_part) - 1), 0)
+    for i in reversed(range(max_spaces)):
         aligned = left_part + (" " * i) + right_part
-        result = ansiwrap.wrap(aligned, width)
+        result = termwrap.wrap(aligned, width)
         if len(result) == 1:
             return result
-    return ansiwrap.wrap(left_part + " " + right_part, width)
+    return termwrap.wrap(left_part + " " + right_part, width)
 
 # Scrollback column with internal "result history" buffer
 class Scrollback:
@@ -117,7 +117,8 @@ class Scrollback:
         self.result_history = []
         self.result_counter = -1
         self.full_redraw = True
-    
+        self.wrapped_cache = []
+        
     # Do I need any redrawing?
     def needs_redraw(self):
         return self.full_redraw or self.dirty
@@ -132,10 +133,13 @@ class Scrollback:
         pprint_result(result, self, str(self.result_counter))
         
     # Print to scrollback
-    def print(self, x):
-        self.scrollback.extend(x.split("\n"))
+    def print(self, x, right_side = None):
+        new_lines = x.split("\n")
+        right_side_lines = [right_side] * len(new_lines)
+        self.scrollback.extend(zip(new_lines, right_side_lines))
         if len(self.scrollback) > 3000:
             self.scrollback = self.scrollback[len(self.scrollback)-3000:]
+            self.wrapped_cache = self.wrapped_cache[len(new_lines):]
         self.dirty = True
         self.added = True
 
@@ -147,11 +151,14 @@ class Scrollback:
     # Draw column
     def draw(self, print_height, max_width):
         # Figure out width
-        print_width = min(self.width, max_width - self.offset)
+        print_width = min(self.width, max_width - self.offset + 1)
         if print_width < 0:
             return
         
         if self.full_redraw:
+            # Invalidate the wrapping cache
+            self.wrapped_cache = []
+            
             # Move to start and draw header
             cursor_to(self.offset + 1, 1)
             title_style = theme["titles"]
@@ -163,10 +170,7 @@ class Scrollback:
             line_style = theme["lines"]
             if self.active:
                 line_style = theme["active"]
-            if print_width < self.width:
-                draw_line(line_style, print_width + 1)
-            else:
-                draw_line(line_style, print_width)
+            draw_line(line_style, print_width)
             self.full_redraw = False
             self.dirty = True
             
@@ -181,15 +185,20 @@ class Scrollback:
             return
         
         wrapped_lines = []
-        for line in self.scrollback:
-            if line.startswith("<#RIGHT#>"):
-                line = line[9:]
-                left_part = wrapped_lines.pop()
-                wrapped_lines.extend(align(left_part, line, text_width))
+        for counter, (line, right_side) in enumerate(self.scrollback):
+            if counter >= len(self.wrapped_cache):
+                new_lines = []
+                if right_side != None:
+                    new_lines = align(line, right_side, text_width)
+                else:
+                    new_lines = termwrap.wrap(line, text_width)
+                if len(new_lines) == 0:
+                    new_lines = [""]
+                wrapped_lines.extend(new_lines)
+                self.wrapped_cache.append(new_lines)
             else:
-                lines = ansiwrap.wrap(line, text_width)
-                wrapped_lines.extend(lines)
-        
+                wrapped_lines.extend(self.wrapped_cache[counter])
+            
         # Update scrollback position, in case it needs updating
         self.pos = max(self.pos, print_height)
         self.pos = min(self.pos, len(wrapped_lines))
@@ -207,11 +216,8 @@ class Scrollback:
         for line_pos, line in enumerate(print_lines):
             cursor_to(self.offset, line_pos + 3)
             clear_line(print_width)
-            cursor_to(self.offset + 1, line_pos + 3)
-            if line == "<#NEW_LINE#>":
-                sys.stdout.write("")
-            else:
-                sys.stdout.write(line)
+            cursor_to(self.offset + 1, line_pos + 3)            
+            sys.stdout.write(line)
     
 buffers = [
     Scrollback("home", 0, 50),
@@ -310,7 +316,7 @@ def screen_update_once():
         
         # Draw title
         cursor_to(cols - len("tootmage") + 1, 0)
-        sys.stdout.write(get_title() + "\n")
+        sys.stdout.write(get_title() + "")
         
         # Draw buffers
         print_height = rows - 4
@@ -386,7 +392,7 @@ def eval_command(orig_command, command, scrollback, interactive = True):
     global last
     
     if interactive:
-        scrollback.print("<#NEW_LINE#>")
+        scrollback.print("")
         scrollback.print(theme["text"] + "> " + orig_command)
         
     try:
