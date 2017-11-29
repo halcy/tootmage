@@ -12,6 +12,14 @@ import prompt_toolkit
 import threading
 import colorsys
 import os
+import tty
+import termios
+import atexit
+
+# Set the terminal to cbreak mode because 1) input is prompt-toolkit only anyways 2) less UI murdering
+term_attrs = termios.tcgetattr(sys.stdin.fileno())
+atexit.register(lambda: termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, term_attrs))
+tty.setcbreak(sys.stdin.fileno())
 
 prompt_app = None
 prompt_cli = None
@@ -289,6 +297,7 @@ last_cols = 0
 def screen_update_once():
     global last_rows
     global last_cols
+    global title_dirty
     
     # Grab size of screen
     cols, rows = shutil.get_terminal_size()
@@ -309,7 +318,8 @@ def screen_update_once():
             need_redraw = True
     if title_dirty:
         need_redraw = True
-    
+        title_dirty = False
+        
     if need_redraw:
         # Store cursor and print header
         cursor_save()
@@ -325,6 +335,10 @@ def screen_update_once():
         
         cursor_restore()
         sys.stdout.flush()
+        
+# Run a render job thread if there is none
+def deferred_draw():
+    pass # TODO
 
 # Draw the little line above the prompt
 def draw_prompt_separator():
@@ -335,6 +349,7 @@ def draw_prompt_separator():
 # Draw/Update loop
 def app_update(context):
     global title_offset
+    global title_dirty
     global watched
     while not context.input_is_ready():
         thread_names = map(lambda x: x.name, threading.enumerate())
@@ -350,24 +365,17 @@ def app_update(context):
         
         screen_update_once()
         if prompt_cli != None:
-            #os.system("stty -echo")
             cols, rows = shutil.get_terminal_size()
             cursor_to(0, rows)
             sys.stdout.write(theme["prompt"] + ">>> ")
             prompt_cli.renderer.reset()
             prompt_cli._redraw()
         time.sleep(0.05)
-        
-    # Tell prompt-toolkit to redraw whenever it has the chance
-    #if prompt_app != None:
-    #    prompt_app.invalidate()
 
 # Print prompt and read a single line
 def read_line(history, key_registry):
     global prompt_app
     global prompt_cli
-    #cursor_reset()
-    #draw_prompt_separator() # TODO redraw me
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows)
     prompt_app = prompt_toolkit.shortcuts.create_prompt_application( 
@@ -381,9 +389,6 @@ def read_line(history, key_registry):
     input_line = prompt_cli.run().text
     for scrollback in buffers:
         scrollback.full_redraw = True
-    sys.stdout.write('\033[1T')        
-    screen_update_once()
-    sys.stdout.flush()
     return(input_line)
 
 # Command evaluator thread
@@ -431,6 +436,15 @@ def eval_command_thread(orig_command, command, scrollback, interactive = True):
 # Set up keybindings
 key_registry = prompt_toolkit.key_binding.defaults.load_key_bindings_for_prompt()
 
+# Accept, but without newline echo
+@key_registry.add_binding(prompt_toolkit.keys.Keys.Enter)
+def read_line_accept(args):
+    cursor_save()
+    cursor_to(0, 0)
+    prompt_cli._set_return_callable(lambda: prompt_app.buffer.document)
+    cursor_restore()
+    tty.setcbreak(sys.stdin.fileno()) # Be paranoid about STAYING in cbreak mode
+    
 # Clear Ctrl-L (clear-screen)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlL)
 def do_nothing(args):
