@@ -1,3 +1,6 @@
+import sys
+sys.path = ["."] + sys.path
+
 from mastodon import Mastodon, StreamListener
 
 import re
@@ -5,7 +8,6 @@ import time
 import datetime
 import html
 import pprint
-import sys
 import shutil
 import termwrap
 import prompt_toolkit
@@ -15,6 +17,98 @@ import os
 import tty
 import termios
 import atexit
+import requests
+from PIL import Image
+import io
+import numpy as np
+import math
+
+# ANSI escape and other output convenience functions
+def ansi_rgb(r, g, b):
+    r = int(round(r * 255.0))
+    g = int(round(g * 255.0))
+    b = int(round(b * 255.0))
+    return "\33[38;2;{};{};{}m".format(str(r), str(g), str(b))
+
+def ansi_clear():
+    return "\33[2J"
+
+def ansi_reset():
+    return "\33[m"
+
+def cursor_save():
+    sys.stdout.write('\0337')
+
+def cursor_restore():
+    sys.stdout.write('\0338')
+
+def cursor_reset():
+    sys.stdout.write("\033[" + str(shutil.get_terminal_size()[1]) + ";0H")
+    sys.stdout.flush()
+
+def cursor_to(x, y):
+    sys.stdout.write("\033[" + str(y) + ";" + str(x) + "H")
+
+def clear_line(clear_len = 0):
+    if clear_len == 0:
+        sys.stdout.write("\033[0K")
+    else:
+        sys.stdout.write(" " * clear_len)
+        sys.stdout.write("\033[" + str(clear_len) + "D")
+
+def clear_screen():
+    sys.stdout.write('\033[2J')
+    sys.stdout.flush()
+
+def draw_line(style, line_len):
+    sys.stdout.write(style + ("═" * line_len))
+    
+# Avatar tools
+avatar_cache = {}
+def get_avatar_cols(avatar_url):
+    avatar_resp = requests.get(avatar_url)
+    avatar_image = Image.open(io.BytesIO(avatar_resp.content)).convert('HSV')
+    avatar = avatar_image.load()
+
+    hue_bins = list(map(lambda x: [], range(1 + 255 // 10)))
+    hue_weights = [0.0] * (1 + 255 // 10)
+    center_x = avatar_image.size[0] / 2
+    center_y = avatar_image.size[1] / 2
+    for y in range(avatar_image.size[1]):
+        for x in range(avatar_image.size[0]):
+            x_dev = (x - center_x) / avatar_image.size[0]
+            y_dev = (y - center_y) / avatar_image.size[1]
+            center_dist = math.sqrt(math.pow(x_dev, 2.0) + math.pow(y_dev, 2.0))
+            col = avatar[x, y]
+            hue_bin = col[0] // 10
+            hue_bins[hue_bin].append(col)
+            hue_weights[hue_bin] += 0.5 + (col[1] / 255.0) * 0.5 + center_dist * 0.1 + abs(col[2] / 255.0 - 0.5) * 0.25
+
+    hues_sorted = [x for _, x in sorted(zip(hue_weights, hue_bins))]
+    primary_cols = []
+    for hue in reversed(hues_sorted[-4:]):
+        most_common_col = np.array(max(set(hue), key=hue.count))
+        median_col = np.median(hue, axis = 0)
+
+        sameyness = 0.0
+        if len(primary_cols) > 0:
+            for col in primary_cols:
+                sameyness += np.linalg.norm(np.array(col) / 255.0 - np.array(most_common_col) / 255.0)
+            sameyness = min(sameyness / len(primary_cols), 1.0)
+        weighted_col = (sameyness * median_col + (1.0 - sameyness) * most_common_col) / 255.0
+        primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*weighted_col))))
+    return primary_cols
+
+def get_avatar(avatar_url):
+    if avatar_url in avatar_cache:
+        return avatar_cache[avatar_url]
+    else:
+        avatar_cols = get_avatar_cols(avatar_url)
+        avatar = ""
+        for col in avatar_cols:
+            avatar = avatar + ansi_rgb(*col) + "█"
+        avatar_cache[avatar_url] = avatar
+        return avatar
 
 # Set the terminal to cbreak mode because 1) input is prompt-toolkit only anyways 2) less UI murdering
 term_attrs = termios.tcgetattr(sys.stdin.fileno())
@@ -32,8 +126,10 @@ def pprint_status(result_prefix, result, scrollback):
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
     
+    avatar = get_avatar(result["account"]["avatar_static"])
+
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted, theme["visibility"] + status_icon) 
-    scrollback.print(theme["text"] + content_clean + " ")
+    scrollback.print(avatar + " " + theme["text"] + content_clean + " ")
     scrollback.print("")
     return
 
@@ -250,46 +346,6 @@ def get_title():
         r, g, b = colorsys.hsv_to_rgb((index * 1.5 + title_offset) / 30.0, 0.8, 1.0)
         title_str = title_str + ansi_rgb(r, g, b) + character
     return title_str
-
-# ANSI escape and other output convenience functions
-def ansi_rgb(r, g, b):
-    r = int(round(r * 255.0))
-    g = int(round(g * 255.0))
-    b = int(round(b * 255.0))
-    return "\33[38;2;{};{};{}m".format(str(r), str(g), str(b))
-
-def ansi_clear():
-    return "\33[2J"
-
-def ansi_reset():
-    return "\33[m"
-
-def cursor_save():
-    sys.stdout.write('\0337')
-
-def cursor_restore():
-    sys.stdout.write('\0338')
-
-def cursor_reset():
-    sys.stdout.write("\033[" + str(shutil.get_terminal_size()[1]) + ";0H")
-    sys.stdout.flush()
-
-def cursor_to(x, y):
-    sys.stdout.write("\033[" + str(y) + ";" + str(x) + "H")
-
-def clear_line(clear_len = 0):
-    if clear_len == 0:
-        sys.stdout.write("\033[0K")
-    else:
-        sys.stdout.write(" " * clear_len)
-        sys.stdout.write("\033[" + str(clear_len) + "D")
-
-def clear_screen():
-    sys.stdout.write('\033[2J')
-    sys.stdout.flush()
-
-def draw_line(style, line_len):
-    sys.stdout.write(style + ("═" * line_len))
     
 # Update application (other than prompt line, that's prompt-toolkits job)
 last_rows = 0
