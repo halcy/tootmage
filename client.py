@@ -67,7 +67,7 @@ def draw_line(style, line_len):
 avatar_cache = {}
 def get_avatar_cols(avatar_url):
     avatar_resp = requests.get(avatar_url)
-    avatar_image = Image.open(io.BytesIO(avatar_resp.content)).convert('HSV')
+    avatar_image = Image.open(io.BytesIO(avatar_resp.content)).convert('RGB').convert('HSV')
     avatar = avatar_image.load()
 
     hue_bins = list(map(lambda x: [], range(1 + 255 // 10)))
@@ -87,26 +87,32 @@ def get_avatar_cols(avatar_url):
     hues_sorted = [x for _, x in sorted(zip(hue_weights, hue_bins))]
     primary_cols = []
     for hue in reversed(hues_sorted[-4:]):
-        most_common_col = np.array(max(set(hue), key=hue.count))
-        median_col = np.median(hue, axis = 0)
+        try:
+            most_common_col = np.array(max(set(hue), key=hue.count))
+            median_col = np.median(hue, axis = 0)
 
-        sameyness = 0.0
-        if len(primary_cols) > 0:
-            for col in primary_cols:
-                sameyness += np.linalg.norm(np.array(col) / 255.0 - np.array(most_common_col) / 255.0)
-            sameyness = min(sameyness / len(primary_cols), 1.0)
-        weighted_col = (sameyness * median_col + (1.0 - sameyness) * most_common_col) / 255.0
-        primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*weighted_col))))
+            sameyness = 0.0
+            if len(primary_cols) > 0:
+                for col in primary_cols:
+                    sameyness += np.linalg.norm(np.array(col) / 255.0 - np.array(most_common_col) / 255.0)
+                sameyness = min(sameyness / len(primary_cols), 1.0)
+            weighted_col = (sameyness * median_col + (1.0 - sameyness) * most_common_col) / 255.0
+            primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*weighted_col))))
+        except:
+            primary_cols.append(primary_cols[0])
     return primary_cols
 
-def get_avatar(avatar_url):
+def get_avatar(avatar_url, avatar_char = "█"):
     if avatar_url in avatar_cache:
         return avatar_cache[avatar_url]
     else:
-        avatar_cols = get_avatar_cols(avatar_url)
-        avatar = ""
-        for col in avatar_cols:
-            avatar = avatar + ansi_rgb(*col) + "█"
+        try:
+            avatar_cols = get_avatar_cols(avatar_url)
+            avatar = ""
+            for col in avatar_cols:
+                avatar = avatar + ansi_rgb(*col) + avatar_char
+        except:
+            avatar = ansi_rgb(0, 0, 0) + (avatar_char * 4) # TODO use handle hash avatar instead
         avatar_cache[avatar_url] = avatar
         return avatar
 
@@ -139,8 +145,11 @@ def pprint_reblog(result_prefix, result, scrollback):
     
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
+    avatar = get_avatar(result["account"]["avatar_static"])
+    avatar_orig = get_avatar(result["reblog"]["account"]["avatar_static"])
+    
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-    scrollback.print("   " + theme["reblog"] + glyphs["reblog"] + " " + theme["names"] + result["reblog"]["account"]["acct"])  
+    scrollback.print(avatar + " " + theme["reblog"] + glyphs["reblog"] + " " + avatar_orig + " " + theme["names"] + result["reblog"]["account"]["acct"])  
     scrollback.print(theme["text"] + content_clean)
     scrollback.print("")
     return
@@ -151,15 +160,19 @@ def pprint_notif(result_prefix, result, scrollback):
 
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
+    avatar = get_avatar(result["account"]["avatar_static"])
+
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-    scrollback.print("   " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text"] + content_clean)
+    scrollback.print(avatar + " " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text"] + content_clean)
     scrollback.print("")
     return
 
 def pprint_follow(result_prefix, result, scrollback):
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
-    scrollback.print(theme["ids"] + result_prefix + theme["follow"] + glyphs["follow"] + " " + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+    avatar = get_avatar(result["account"]["avatar_static"])
+
+    scrollback.print(theme["ids"] + result_prefix + " " + avatar + " " + theme["follow"] + glyphs["follow"] + " " + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
     scrollback.print("")
     return
 
