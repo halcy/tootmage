@@ -44,7 +44,6 @@ def cursor_restore():
 
 def cursor_reset():
     sys.stdout.write("\033[" + str(shutil.get_terminal_size()[1]) + ";0H")
-    sys.stdout.flush()
 
 def cursor_to(x, y):
     sys.stdout.write("\033[" + str(y) + ";" + str(x) + "H")
@@ -58,7 +57,6 @@ def clear_line(clear_len = 0):
 
 def clear_screen():
     sys.stdout.write('\033[2J')
-    sys.stdout.flush()
 
 def draw_line(style, line_len):
     sys.stdout.write(style + ("═" * line_len))
@@ -403,8 +401,13 @@ def screen_update_once():
             scrollback.draw(print_height, cols)
         
         cursor_restore()
-        sys.stdout.flush()
-        
+    
+def no_op():
+    pass
+
+def no_op_2(x):
+    pass
+
 # Run a render job thread if there is none
 def deferred_draw():
     pass # TODO
@@ -416,6 +419,15 @@ def draw_prompt_separator():
     draw_line(theme["lines"], cols)
 
 # Draw/Update loop
+real_flush = sys.stdout.flush
+sys.stdout.flush = no_op
+
+real_write = sys.stdout.write
+sys.stdout.write = no_op_2
+
+def move_cursor(new, xoff):
+    cursor_to(new.x + xoff, new.y)
+    
 def app_update(context):
     global title_offset
     global title_dirty
@@ -432,14 +444,25 @@ def app_update(context):
                 watched_expr[1] = time.time()
                 eval_command_thread("", funct, scrollback, False)
         
+        # Printing is now allowed
+        sys.stdout.write = real_write
+        
+        # Redraw main UI
         screen_update_once()
+        
+        # Redraw CLI
         if prompt_cli != None:
             cols, rows = shutil.get_terminal_size()
             cursor_to(0, rows)
-            sys.stdout.write(theme["prompt"] + ">>> ")
-            prompt_cli.renderer.reset()
-            prompt_cli._redraw()
-        time.sleep(0.05)
+            prompt_cli.renderer.output.cursor_goto = lambda x, y: prompt_cli.renderer.output.cursor_goto(x + 5, y)
+            prompt_cli.renderer.erase()
+            prompt_cli.renderer.render(prompt_cli, prompt_cli.layout)
+            cursor_to(prompt_cli.current_buffer.cursor_position + 5, rows) # TODO i-search has a broken cursor
+        real_flush()
+        
+        # No updating the UI outside of this function
+        sys.stdout.write = no_op_2
+        time.sleep(0.01)
 
 # Print prompt and read a single line
 def read_line(history, key_registry):
@@ -447,11 +470,11 @@ def read_line(history, key_registry):
     global prompt_cli
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows)
-    prompt_app = prompt_toolkit.shortcuts.create_prompt_application( 
+    prompt_app = prompt_toolkit.shortcuts.create_prompt_application(
         wrap_lines = False,
         history = history,
         key_bindings_registry = key_registry,
-        extra_input_processors = [prompt_toolkit.layout.processors.BeforeInput.static("")]
+        extra_input_processors = [prompt_toolkit.layout.processors.BeforeInput.static(">>> ")]
     )
     eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update)
     prompt_cli = prompt_toolkit.CommandLineInterface(application=prompt_app, eventloop=eventloop)
@@ -575,8 +598,8 @@ m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secre
 #watch(m.timeline, buffers[0]], 60)
 #watch(m.notifications, buffers[1], 60)
 #watch(m.timeline_local, buffers[2], 60)
-watch_stream(m.stream_user, buffers[0], buffers[1])
-watch_stream(m.stream_local, buffers[2])
+#watch_stream(m.stream_user, buffers[0], buffers[1])
+#watch_stream(m.stream_local, buffers[2])
     
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
