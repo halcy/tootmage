@@ -161,7 +161,7 @@ def pprint_notif(result_prefix, result, scrollback):
     avatar = get_avatar(result["account"]["avatar_static"])
 
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-    scrollback.print(avatar + " " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text"] + content_clean)
+    scrollback.print(avatar + " " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text_notif"] + content_clean)
     scrollback.print("")
     return
 
@@ -233,11 +233,16 @@ class Scrollback:
         self.result_counter = -1
         self.full_redraw = True
         self.wrapped_cache = []
-        
+    
     # Do I need any redrawing?
     def needs_redraw(self):
         return self.full_redraw or self.dirty
     
+    # Set buffer active or no
+    def set_active(self, active):
+        self.active = active
+        self.full_redraw = True
+        
     # Append to result history and print
     def add_result(self, result):
         self.result_counter = (self.result_counter + 1) % 1000
@@ -330,7 +335,7 @@ class Scrollback:
         # Draw scrollback area
         for line_pos, line in enumerate(print_lines):
             cursor_to(self.offset, line_pos + 3)
-            clear_line(print_width)
+            clear_line(print_width + 1)
             cursor_to(self.offset + 1, line_pos + 3)            
             sys.stdout.write(line)
     
@@ -340,7 +345,8 @@ buffers = [
     Scrollback("local", 102, 50),
     Scrollback("scratch", 153, 5000),
 ]
-buffers[2].active = True
+buffer_active = len(buffers) - 1
+buffers[buffer_active].set_active(True)
 
 watched = [
 ]
@@ -606,14 +612,35 @@ def do_nothing(args):
 # Increase scrollback position
 @key_registry.add_binding(prompt_toolkit.keys.Keys.PageDown)
 def scroll_up(args, how_far = 2):
-    buffers[-1].scroll(2)
+    buffers[buffer_active].scroll(2)
     
 
 # Reduce scrollback position
 @key_registry.add_binding(prompt_toolkit.keys.Keys.PageUp)
 def scroll_down(args, how_far = 2):
-    buffers[-1].scroll(-2)
+    buffers[buffer_active].scroll(-2)
 
+# Next buffer
+@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlRight)
+def next_buffer(args):
+    global buffer_active
+    buffer_new = buffer_active + 1
+    if buffer_new >= len(buffers):
+        buffer_new -= len(buffers)
+    buffers[buffer_active].set_active(False)
+    buffers[buffer_new].set_active(True)        
+    buffer_active = buffer_new
+
+# Previous buffer
+@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlLeft)
+def next_buffer(args):
+    global buffer_active
+    buffer_new = buffer_active - 1
+    if buffer_new < 0:
+        buffer_new += len(buffers)
+    buffers[buffer_active].set_active(False)
+    buffers[buffer_new].set_active(True)
+    buffer_active = buffer_new
 
 # Function that adds a watcher
 def watch(function, scrollback, every_s):
@@ -672,6 +699,7 @@ watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
     
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
+    "text_notif": ansi_reset() + ansi_rgb(0.5, 0.5, 0.5),
     "ids": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
     "names": ansi_rgb(1.0, 1.0, 0.5),
