@@ -65,7 +65,7 @@ def draw_line(style, line_len):
 avatar_cache = {}
 def get_avatar_cols(avatar_url):
     avatar_resp = requests.get(avatar_url)
-    avatar_image = Image.open(io.BytesIO(avatar_resp.content)).convert('RGB').convert('HSV')
+    avatar_image = Image.open(io.BytesIO(avatar_resp.content)).convert('RGBA').convert('HSV')
     avatar = avatar_image.load()
 
     hue_bins = list(map(lambda x: [], range(1 + 255 // 10)))
@@ -338,7 +338,7 @@ buffers = [
     Scrollback("home", 0, 50),
     Scrollback("notifications", 51, 50),
     Scrollback("local", 102, 50),
-    Scrollback("scratch", 153, 10000),
+    Scrollback("scratch", 153, 5000),
 ]
 buffers[2].active = True
 
@@ -401,26 +401,12 @@ def screen_update_once():
             scrollback.draw(print_height, cols)
         
         cursor_restore()
-    
-# No-Op functions for patching
-def no_op():
-    pass
-
-def no_op_2(x):
-    pass
 
 # Draw the little line above the prompt
 def draw_prompt_separator():
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows - 1)
     draw_line(theme["lines"], cols)
-
-# Draw/Update loop
-real_flush = sys.stdout.flush
-sys.stdout.flush = no_op
-
-real_write = sys.stdout.write
-sys.stdout.write = no_op_2
 
 def move_cursor(new, xoff):
     cursor_to(new.x + xoff, new.y)
@@ -440,7 +426,7 @@ def app_update(context):
     while not context.input_is_ready():
         thread_names = map(lambda x: x.name, threading.enumerate())
         if "command_runner" in thread_names:
-            title_offset += 3.0
+            title_offset += 2.0
             title_dirty = True
             
         for watched_expr in watched:
@@ -449,23 +435,18 @@ def app_update(context):
                 watched_expr[1] = time.time()
                 eval_command_thread("", funct, scrollback, False)
         
-        # Printing is now allowed
-        sys.stdout.write = real_write
-        
         # Redraw main UI
         screen_update_once()
         
         # Redraw CLI
         if prompt_cli != None:
             # Don't want the CLI to actually draw anything
-            sys.stdout.write = no_op_2
     
             # Run through the render routines so we have the tokens
             prompt_cli.renderer.reset()
             prompt_cli.renderer.render(prompt_cli, prompt_cli.layout)
             
             # Draw the tokens, manually
-            sys.stdout.write = real_write
             cols, rows = shutil.get_terminal_size()
             
             cursor_to(0, rows)
@@ -474,19 +455,28 @@ def app_update(context):
             cursor_to(0, rows)
             sys.stdout.write(theme["prompt"] + ">>> ")
             for token in cli_tokens:
-                sys.stdout.write(token[1])
+                token_type = token[0]
+                
+                # Some very basic styling
+                if len(token_type) > 1:
+                    token_type = "Token." + ".".join(token_type[1:])                    
+                token_type = str(token_type)
+                    
+                if not token_type in theme["prompt_toolkit_tokens"]:
+                    token_type = "Default"                
+                sys.stdout.write(theme["prompt_toolkit_tokens"][token_type] + token[1])
             
             # Prompt separator
             draw_prompt_separator()
             
             # Set cursor position
             cursor_to(prompt_cli.current_buffer.cursor_position + 5, rows) # TODO i-search has a broken cursor
-        real_flush()
+        sys.stdout.flush()
         
         # No updating the UI outside of this function
-        sys.stdout.write = no_op_2
+        #sys.stdout.write = no_op_2
         
-        time.sleep(0.01)
+        time.sleep(0.02)
 
 # Don't want to use prompt_toolkits layouting, lets make it so we can draw
 # all the tokens ourselves!
@@ -494,7 +484,7 @@ def create_bottom_repl_application(
         completer = None, 
         history = None,
         key_bindings_registry = None,
-        on_abort = prompt_toolkit.interface.AbortAction.RAISE_EXCEPTION,
+        on_abort = prompt_toolkit.interface.AbortAction.RETRY,
         on_exit = prompt_toolkit.interface.AbortAction.RAISE_EXCEPTION,
         accept_action = prompt_toolkit.interface.AcceptAction.RETURN_DOCUMENT):
 
@@ -562,7 +552,6 @@ def eval_command(orig_command, command, scrollback, interactive = True):
     if interactive:
         scrollback.print("")
         scrollback.print(theme["text"] + "> " + orig_command)
-        
     try:
         result_ns = {}
         print_result = None
@@ -606,6 +595,7 @@ def read_line_accept(args):
     cursor_to(0, 0)
     prompt_cli._set_return_callable(lambda: prompt_app.buffer.document)
     cursor_restore()
+    history.append(prompt_app.buffer.document.text)
     tty.setcbreak(sys.stdin.fileno()) # Be paranoid about STAYING in cbreak mode
     
 # Clear Ctrl-L (clear-screen)
@@ -645,20 +635,28 @@ class EventCollector(StreamListener):
             self.notification_event_handler(notification)
         
 # Watcher that watches a stream
-def watch_stream(function, scrollback = None, scrollback_notifications = None): # TODO call this in a thread
-    def watch_stream_internal(function, scrollback = None, scrollback_notifications = None):
+def watch_stream(function, scrollback = None, scrollback_notifications = None, initial_fill = None, initial_fill_notifications = None):
+    def watch_stream_internal(function, scrollback = None, scrollback_notifications = None, initial_fill = None, initial_fill_notifications = None):
         event_handler = None
         if scrollback != None:
             event_handler = scrollback.add_result
-        
+            if initial_fill != None:
+                initial_data = initial_fill()
+                for result in initial_data:
+                    event_handler(result)
+                
         notification_event_handler = None
         if scrollback_notifications != None:
             notification_event_handler = scrollback_notifications.add_result
-            
+            if initial_fill != None:
+                initial_data = initial_fill_notifications()
+                for result in initial_data:
+                    notification_event_handler(result)
+                
         result_collector = EventCollector(event_handler, notification_event_handler)
         watched_streams.append(function(result_collector, async = True))
         
-    watch_start_thread = threading.Thread(target = watch_stream_internal, name = "start_watch", args = (function, scrollback, scrollback_notifications))
+    watch_start_thread = threading.Thread(target = watch_stream_internal, name = "start_watch", args = (function, scrollback, scrollback_notifications, initial_fill, initial_fill_notifications))
     watch_start_thread.start()
     
 # Preamble: Create mastodon object
@@ -669,8 +667,8 @@ m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secre
 #watch(m.timeline, buffers[0]], 60)
 #watch(m.notifications, buffers[1], 60)
 #watch(m.timeline_local, buffers[2], 60)
-#watch_stream(m.stream_user, buffers[0], buffers[1])
-#watch_stream(m.stream_local, buffers[2])
+watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
+watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
     
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
@@ -680,6 +678,13 @@ theme = {
     "lines": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "titles": ansi_rgb(1.0, 1.0, 1.0),
     "prompt": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
+    "prompt_toolkit_tokens": {
+        "Default": ansi_rgb(1.0, 1.0, 1.0),
+        "Token.Search": ansi_rgb(1.0, 1.0, 0.5),
+        "Token.Search.Text": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
+        "Token.SearchMatch.Current": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
+        "Token.AutoSuggestion": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
+    },
     "active": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
     "reblog": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
     "follow": ansi_rgb(128.0 / 255.0, 128.0 / 255.0, 255.0 / 255.0),
