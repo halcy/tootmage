@@ -402,15 +402,12 @@ def screen_update_once():
         
         cursor_restore()
     
+# No-Op functions for patching
 def no_op():
     pass
 
 def no_op_2(x):
     pass
-
-# Run a render job thread if there is none
-def deferred_draw():
-    pass # TODO
 
 # Draw the little line above the prompt
 def draw_prompt_separator():
@@ -427,6 +424,14 @@ sys.stdout.write = no_op_2
 
 def move_cursor(new, xoff):
     cursor_to(new.x + xoff, new.y)
+
+# Token saver
+cli_tokens = None
+class StoreTokens(prompt_toolkit.layout.processors.Processor):
+    def apply_transformation(self, cli, document, lineno, source_to_display, tokens):
+        global cli_tokens
+        cli_tokens = tokens
+        return prompt_toolkit.layout.processors.Transformation(tokens)
     
 def app_update(context):
     global title_offset
@@ -452,17 +457,85 @@ def app_update(context):
         
         # Redraw CLI
         if prompt_cli != None:
-            cols, rows = shutil.get_terminal_size()
-            cursor_to(0, rows)
-            prompt_cli.renderer.output.cursor_goto = lambda x, y: prompt_cli.renderer.output.cursor_goto(x + 5, y)
-            prompt_cli.renderer.erase()
+            # Don't want the CLI to actually draw anything
+            sys.stdout.write = no_op_2
+    
+            # Run through the render routines so we have the tokens
+            prompt_cli.renderer.reset()
             prompt_cli.renderer.render(prompt_cli, prompt_cli.layout)
+            
+            # Draw the tokens, manually
+            sys.stdout.write = real_write
+            cols, rows = shutil.get_terminal_size()
+            
+            cursor_to(0, rows)
+            clear_line()
+            
+            cursor_to(0, rows)
+            sys.stdout.write(theme["prompt"] + ">>> ")
+            for token in cli_tokens:
+                sys.stdout.write(token[1])
+            
+            # Prompt separator
+            draw_prompt_separator()
+            
+            # Set cursor position
             cursor_to(prompt_cli.current_buffer.cursor_position + 5, rows) # TODO i-search has a broken cursor
         real_flush()
         
         # No updating the UI outside of this function
         sys.stdout.write = no_op_2
+        
         time.sleep(0.01)
+
+# Don't want to use prompt_toolkits layouting, lets make it so we can draw
+# all the tokens ourselves!
+def create_bottom_repl_application(
+        completer = None, 
+        history = None,
+        key_bindings_registry = None,
+        on_abort = prompt_toolkit.interface.AbortAction.RAISE_EXCEPTION,
+        on_exit = prompt_toolkit.interface.AbortAction.RAISE_EXCEPTION,
+        accept_action = prompt_toolkit.interface.AcceptAction.RETURN_DOCUMENT):
+
+    # Create list of input processors that we need
+    input_processors = [
+        prompt_toolkit.layout.processors.ConditionalProcessor(
+            prompt_toolkit.layout.processors.HighlightSearchProcessor(preview_search = True),
+            prompt_toolkit.filters.HasFocus(prompt_toolkit.enums.SEARCH_BUFFER)
+        ),
+        prompt_toolkit.layout.processors.HighlightSelectionProcessor(),
+        prompt_toolkit.layout.processors.ConditionalProcessor(
+            prompt_toolkit.layout.processors.AppendAutoSuggestion(), 
+            prompt_toolkit.filters.HasFocus(prompt_toolkit.enums.DEFAULT_BUFFER) & ~prompt_toolkit.filters.IsDone()
+        ),
+        prompt_toolkit.layout.prompt.DefaultPrompt(lambda cli: []),
+        StoreTokens()
+    ]
+    
+    # Create layout (essentially a dummy - we draw tokens ourselves)
+    layout = prompt_toolkit.layout.Window(
+        prompt_toolkit.layout.BufferControl(
+            input_processors = input_processors,
+            preview_search = True
+        ),
+        get_height= lambda cli: prompt_toolkit.layout.dimension.LayoutDimension.exact(1),
+        wrap_lines = False,
+    )
+    
+    # Create application
+    return prompt_toolkit.Application(
+        layout = layout,
+        buffer = prompt_toolkit.buffer.Buffer(
+            history = history,
+            completer = completer,
+            accept_action = accept_action,
+            initial_document = prompt_toolkit.document.Document(''),
+        ),
+        key_bindings_registry = key_bindings_registry,
+        on_abort = on_abort,
+        on_exit = on_exit
+    )
 
 # Print prompt and read a single line
 def read_line(history, key_registry):
@@ -470,11 +543,9 @@ def read_line(history, key_registry):
     global prompt_cli
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows)
-    prompt_app = prompt_toolkit.shortcuts.create_prompt_application(
-        wrap_lines = False,
+    prompt_app = create_bottom_repl_application(
         history = history,
         key_bindings_registry = key_registry,
-        extra_input_processors = [prompt_toolkit.layout.processors.BeforeInput.static(">>> ")]
     )
     eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update)
     prompt_cli = prompt_toolkit.CommandLineInterface(application=prompt_app, eventloop=eventloop)
