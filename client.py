@@ -11,6 +11,8 @@ import pprint
 import shutil
 import termwrap
 import prompt_toolkit
+import prompt_toolkit.contrib
+import prompt_toolkit.contrib.completers
 import threading
 import colorsys
 import os
@@ -539,9 +541,11 @@ def read_line(history, key_registry):
     global prompt_cli
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows)
+    completer = MastodonFuncCompleter()     
     prompt_app = create_bottom_repl_application(
         history = history,
         key_bindings_registry = key_registry,
+        completer = completer
     )
     eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update)
     prompt_cli = prompt_toolkit.CommandLineInterface(application=prompt_app, eventloop=eventloop)
@@ -690,12 +694,81 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
 MASTODON_BASE_URL = "https://icosahedron.website"
 m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secret', api_base_url = MASTODON_BASE_URL)
 
+def prefix_val(name):
+        val = 0
+        if not '_' in name:
+            val -= 100000
+        
+        if name.startswith('toot'):
+            val -= 10000
+        
+        if name.startswith('status'):
+            val -= 10000
+        
+        if name.startswith('account'):
+            val -= 9000
+        
+        if name.startswith('media'):
+            val -= 8000
+        
+        if name.startswith('timeline'):
+            val -= 7000
+        
+        if name.startswith('notifications'):
+            val -= 6000
+        
+        if name.startswith('follow'):
+            val -= 5000
+        
+        if name.startswith('domain'):
+            val -= 4000
+        
+        val = val + len(name)
+        return val
+
+def suffix_key(name):
+    if "_" in name:
+        return name[name.rfind("_") + 1:]
+    return name
+
+def combined_key(name):
+    return(suffix_key(name.text), prefix_val(name.text))
+
+def get_func_names():
+    funcs = dir(Mastodon)
+    funcs = list(filter(lambda x: not x.startswith("_"), funcs))
+    funcs = list(filter(lambda x: not x.endswith("_version"), funcs))    
+    funcs = list(filter(lambda x: not "stream_" in x, funcs))
+    funcs = list(filter(lambda x: not "fetch_" in x, funcs))
+    funcs = list(filter(lambda x: not "create_app" in x, funcs))
+    funcs = list(filter(lambda x: not "create_app" in x, funcs))
+    funcs = list(filter(lambda x: not "auth_request_url" in x, funcs)) 
+    return sorted(funcs, key = prefix_val)
+
+class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
+    def __init__(self):
+        self.base_completer = prompt_toolkit.contrib.completers.WordCompleter(get_func_names(), ignore_case = True, match_middle = True)
+    
+    def get_completions(self, document, complete_event):
+        base_completions = list(self.base_completer.get_completions(document, complete_event))
+        base_completions = sorted(base_completions, key = combined_key)
+        
+        best_matches = []
+        good_matches = []
+        match_text = document.get_word_before_cursor(WORD=False)
+        for match in base_completions:
+            if suffix_key(match.text).startswith(match_text):
+                best_matches.append(match)
+            else:
+                good_matches.append(match)
+        return(best_matches + good_matches)
+
 # Column contents
 #watch(m.timeline, buffers[0]], 60)
 #watch(m.notifications, buffers[1], 60)
 #watch(m.timeline_local, buffers[2], 60)
-watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
-watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
+#watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
+#watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
     
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
@@ -731,31 +804,35 @@ glyphs = {
 }
 
 # Start up and run REPL
-clear_screen()
-cols, rows = shutil.get_terminal_size()
-history = prompt_toolkit.history.FileHistory(".tootmage_history")
-
-while True:
-    orig_command = read_line(history, key_registry)
-    command = orig_command
+def run_app():
+    clear_screen()
+    cols, rows = shutil.get_terminal_size()
+    history = prompt_toolkit.history.FileHistory(".tootmage_history")
     
-    if len(command.strip()) == 0:
-        continue
-    
-    if command[0] == "#":
-        dot_position = command.find(".")
-        if dot_position != -1:
-            command = "m" + command[dot_position:] + "(" + command[:dot_position] + ")"
-    else:
-        if command[0] == ".":
-            command = command[1:]
+    while True:
+        orig_command = read_line(history, key_registry)
+        command = orig_command
+        
+        if len(command.strip()) == 0:
+            continue
+        
+        if command[0] == "#":
+            dot_position = command.find(".")
+            if dot_position != -1:
+                command = "m" + command[dot_position:] + "(" + command[:dot_position] + ")"
         else:
-            command = "m." + command
-            
-    command = re.sub(r'#([0-9]+)', r'last[\1]', command)
-    command = re.sub(r'#', r'last', command)
-    
-    if command.find("=") == -1:
-        command = "__thread_res = (" + command + ")"
-    
-    eval_command_thread(orig_command, command, buffers[-1])
+            if command[0] == ".":
+                command = command[1:]
+            else:
+                command = "m." + command
+                
+        command = re.sub(r'#([0-9]+)', r'last[\1]', command)
+        command = re.sub(r'#', r'last', command)
+        
+        if command.find("=") == -1:
+            command = "__thread_res = (" + command + ")"
+        
+        eval_command_thread(orig_command, command, buffers[-1])
+
+#print(getFuncNames())
+run_app()
