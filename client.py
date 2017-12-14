@@ -73,7 +73,9 @@ def draw_line(style, line_len):
 avatar_cache = {}
 def get_avatar_cols(avatar_url):
     avatar_resp = requests.get(avatar_url)
-    avatar_image = Image.open(io.BytesIO(avatar_resp.content)).convert('RGBA').convert('HSV')
+    avatar_image = Image.open(io.BytesIO(avatar_resp.content))
+    avatar_image = avatar_image.resize((60, 60))
+    avatar_image = avatar_image.convert('RGBA').convert('HSV')
     avatar = avatar_image.load()
 
     hue_bins = list(map(lambda x: [], range(1 + 255 // 10)))
@@ -328,7 +330,7 @@ class Scrollback:
             else:
                 wrapped_lines.extend(self.wrapped_cache[counter])
             
-        # Update scrollback position, in case it needs updating
+        # Update scrollbacavatar_imagek position, in case it needs updating
         self.pos = max(self.pos, print_height)
         self.pos = min(self.pos, len(wrapped_lines))
         
@@ -842,8 +844,10 @@ def run_app():
             continue
         
         # Starts with semicolon -> python command
+        py_direct = False
         if command[0] == ";":
             command = command[1:]
+            py_direct = True
         else:
             # Starts with # or . -> buffer ref
             if not command[0] in "#.": # TODO make these configurable
@@ -858,7 +862,7 @@ def run_app():
         command = re.sub(r'#', r'last', command)
         command = re.sub(r'\.([0-9]+).([0-9]+)', r'buffers[\1].result_history[\2]', command)
         
-        if command.find("=") == -1:
+        if command.find("=") == -1 or not py_direct:
             command = "__thread_res = (" + command + ")"
         
         eval_command_thread(orig_command, command, buffers[-1])
