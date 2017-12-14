@@ -349,10 +349,10 @@ class Scrollback:
             sys.stdout.write(line)
     
 buffers = [
-    Scrollback("home", 0, 50),
-    Scrollback("notifications", 51, 50),
-    Scrollback("local", 102, 50),
-    Scrollback("scratch", 153, 5000),
+    Scrollback("0: home", 0, 50),
+    Scrollback("1: notifications", 51, 50),
+    Scrollback("2: local", 102, 50),
+    Scrollback("3: scratch", 153, 5000),
 ]
 buffer_active = len(buffers) - 1
 buffers[buffer_active].set_active(True)
@@ -642,6 +642,7 @@ def scroll_down(args, how_far = 2):
     buffers[buffer_active].scroll(-2)
 
 # Next buffer
+@key_registry.add_binding(prompt_toolkit.keys.Keys.Escape, prompt_toolkit.keys.Keys.Down)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlPageDown)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlRight)
 def next_buffer(args):
@@ -654,6 +655,7 @@ def next_buffer(args):
     buffer_active = buffer_new
 
 # Previous buffer
+@key_registry.add_binding(prompt_toolkit.keys.Keys.Escape, prompt_toolkit.keys.Keys.Up)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlPageUp)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlLeft)
 def next_buffer(args):
@@ -786,8 +788,8 @@ class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
 #watch(m.timeline, buffers[0]], 60)
 #watch(m.notifications, buffers[1], 60)
 #watch(m.timeline_local, buffers[2], 60)
-#watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
-#watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
+watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
+watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
     
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
@@ -839,23 +841,26 @@ def run_app():
         if len(command.strip()) == 0:
             continue
         
-        if command[0] == "#":
-            dot_position = command.find(".")
-            if dot_position != -1:
-                command = "m" + command[dot_position:] + "(" + command[:dot_position] + ")"
+        # Starts with semicolon -> python command
+        if command[0] == ";":
+            command = command[1:]
         else:
-            if command[0] == ".":
-                command = command[1:]
-            else:
+            # Starts with # or . -> buffer ref
+            if not command[0] in "#.": # TODO make these configurable
                 command = "m." + command
+            else:
+                pass
+                #dot_position = command.find(".")
+                #if dot_position != -1: # TODO make this good
+                #    command = "m" + command[dot_position:] + "(" + command[:dot_position] + ")"
                 
         command = re.sub(r'#([0-9]+)', r'last[\1]', command)
         command = re.sub(r'#', r'last', command)
+        command = re.sub(r'\.([0-9]+).([0-9]+)', r'buffers[\1].result_history[\2]', command)
         
         if command.find("=") == -1:
             command = "__thread_res = (" + command + ")"
         
         eval_command_thread(orig_command, command, buffers[-1])
 
-#print(getFuncNames())
 run_app()
