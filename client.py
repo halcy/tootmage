@@ -25,6 +25,12 @@ import io
 import numpy as np
 import math
 
+# Patch prompt-toolkit a bit
+prompt_toolkit.keys.Keys.ControlPageUp = prompt_toolkit.keys.Key("<C-PageUp>")
+prompt_toolkit.keys.Keys.ControlPageDown = prompt_toolkit.keys.Key("<C-PageDown>")
+prompt_toolkit.terminal.vt100_input.ANSI_SEQUENCES['\x1b[5;5~'] = prompt_toolkit.keys.Keys.ControlPageUp
+prompt_toolkit.terminal.vt100_input.ANSI_SEQUENCES['\x1b[6;5~'] = prompt_toolkit.keys.Keys.ControlPageDown
+
 # ANSI escape and other output convenience functions
 def ansi_rgb(r, g, b):
     r = int(round(r * 255.0))
@@ -123,6 +129,7 @@ tty.setcbreak(sys.stdin.fileno())
 
 prompt_app = None
 prompt_cli = None
+history = None
 
 # Mastodon API dict pretty printers
 def pprint_status(result_prefix, result, scrollback):
@@ -598,6 +605,16 @@ def eval_command_thread(orig_command, command, scrollback, interactive = True):
 # Set up keybindings
 key_registry = prompt_toolkit.key_binding.defaults.load_key_bindings_for_prompt()
 
+# Instant tab completion
+@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlI)
+def generate_completions(event):
+    b = event.current_buffer
+    if b.complete_state:
+        b.complete_next()
+    else:
+        event.cli.start_completion(insert_common_part=True, select_first=True)
+        b.complete_next()
+
 # Accept, but without newline echo
 @key_registry.add_binding(prompt_toolkit.keys.Keys.Enter)
 def read_line_accept(args):
@@ -625,6 +642,7 @@ def scroll_down(args, how_far = 2):
     buffers[buffer_active].scroll(-2)
 
 # Next buffer
+@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlPageDown)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlRight)
 def next_buffer(args):
     global buffer_active
@@ -636,6 +654,7 @@ def next_buffer(args):
     buffer_active = buffer_new
 
 # Previous buffer
+@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlPageUp)
 @key_registry.add_binding(prompt_toolkit.keys.Keys.ControlLeft)
 def next_buffer(args):
     global buffer_active
@@ -804,11 +823,15 @@ glyphs = {
 }
 
 # Start up and run REPL
-def run_app():
+def run_app():    
+    # Set stuff up
     clear_screen()
     cols, rows = shutil.get_terminal_size()
+    
+    global history
     history = prompt_toolkit.history.FileHistory(".tootmage_history")
     
+    # REPL
     while True:
         orig_command = read_line(history, key_registry)
         command = orig_command
