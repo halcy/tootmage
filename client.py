@@ -550,7 +550,7 @@ def read_line(history, key_registry):
     global prompt_cli
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows)
-    completer = MastodonFuncCompleter()     
+    completer = MastodonFuncCompleter()
     prompt_app = create_bottom_repl_application(
         history = history,
         key_bindings_registry = key_registry,
@@ -696,7 +696,7 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
             event_handler = scrollback.add_result
             if initial_fill != None:
                 initial_data = initial_fill()
-                for result in initial_data:
+                for result in reversed(initial_data):
                     event_handler(result)
                 
         notification_event_handler = None
@@ -704,7 +704,7 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
             notification_event_handler = scrollback_notifications.add_result
             if initial_fill != None:
                 initial_data = initial_fill_notifications()
-                for result in initial_data:
+                for result in reversed(initial_data):
                     notification_event_handler(result)
                 
         result_collector = EventCollector(event_handler, notification_event_handler)
@@ -773,12 +773,15 @@ class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
         self.base_completer = prompt_toolkit.contrib.completers.WordCompleter(get_func_names(), ignore_case = True, match_middle = True)
     
     def get_completions(self, document, complete_event):
-        base_completions = list(self.base_completer.get_completions(document, complete_event))
+        completion_text = document.text.replace("-", "_")
+        comp_document = prompt_toolkit.document.Document(completion_text, document.cursor_position)
+        
+        base_completions = list(self.base_completer.get_completions(comp_document, complete_event))
         base_completions = sorted(base_completions, key = combined_key)
         
         best_matches = []
         good_matches = []
-        match_text = document.get_word_before_cursor(WORD=False)
+        match_text = comp_document.get_word_before_cursor(WORD=False)
         for match in base_completions:
             if suffix_key(match.text).startswith(match_text):
                 best_matches.append(match)
@@ -850,13 +853,22 @@ def run_app():
             py_direct = True
         else:
             # Starts with # or . -> buffer ref
-            if not command[0] in "#.": # TODO make these configurable
-                command = "m." + command
-            else:
+            if command[0] in "#.": # TODO make these configurable
+                # TODO maybe convert things with dot notation
                 pass
-                #dot_position = command.find(".")
-                #if dot_position != -1: # TODO make this good
-                #    command = "m" + command[dot_position:] + "(" + command[:dot_position] + ")"
+            else:
+                # Direct command -> autocomplete
+                command_parts = command.split(" ")
+                potential_commands = MastodonFuncCompleter().get_completions(
+                    prompt_toolkit.document.Document(command_parts[0]),
+                    prompt_toolkit.completion.CompleteEvent(False, True)
+                )
+                if len(potential_commands) > 0:
+                    command_parts[0] = potential_commands[0].text
+                    
+                # Build actual command
+                command = command_parts[0] + "(" + " ".join(command_parts[1:]) + ")"
+                command = "m." + command
                 
         command = re.sub(r'#([0-9]+)', r'last[\1]', command)
         command = re.sub(r'#', r'last', command)
