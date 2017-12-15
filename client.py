@@ -148,7 +148,7 @@ def clean_text(text, style_names, style_text):
     return "\n".join(content_split)
     
 def pprint_status(result_prefix, result, scrollback):
-    content_clean = clean_text(result["content"], theme["names"], theme["text"])
+    content_clean = clean_text(result["content"], theme["names_inline"], theme["text"])
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
     
@@ -160,7 +160,7 @@ def pprint_status(result_prefix, result, scrollback):
     return
 
 def pprint_reblog(result_prefix, result, scrollback):
-    content_clean = clean_text(result["content"], theme["names"], theme["text"])
+    content_clean = clean_text(result["content"], theme["names_inline"], theme["text"])
     
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
@@ -174,7 +174,7 @@ def pprint_reblog(result_prefix, result, scrollback):
     return
 
 def pprint_notif(result_prefix, result, scrollback):
-    content_clean = clean_text(result["status"]["content"], theme["names"], theme["text_notif"])
+    content_clean = clean_text(result["status"]["content"], theme["names_notif"], theme["text_notif"])
 
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
@@ -726,13 +726,17 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
 MASTODON_BASE_URL = "https://icosahedron.website"
 m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secret', api_base_url = MASTODON_BASE_URL)
 
+# Sorting... is complicated and phenomenological.
 def prefix_val(name):
         val = 0
         if not '_' in name:
             val -= 100000
         
         if name.startswith('toot'):
-            val -= 10000
+            val -= 11000
+        
+        if name.startswith('reply'):
+            val -= 15000
         
         if name.startswith('status'):
             val -= 10000
@@ -763,8 +767,17 @@ def suffix_key(name):
         return name[name.rfind("_") + 1:]
     return name
 
+def overrride_key(name):
+    if name.endswith('reply'):
+        return 0
+    if name.endswith('boost'):
+        return 0
+    if name.endswith('expand'):
+        return 0
+    return 1
+
 def combined_key(name):
-    return(suffix_key(name.text), prefix_val(name.text))
+    return(overrride_key(name.text), suffix_key(name.text), prefix_val(name.text))
 
 def get_func_names():
     funcs = dir(Mastodon)
@@ -774,7 +787,9 @@ def get_func_names():
     funcs = list(filter(lambda x: not "fetch_" in x, funcs))
     funcs = list(filter(lambda x: not "create_app" in x, funcs))
     funcs = list(filter(lambda x: not "create_app" in x, funcs))
-    funcs = list(filter(lambda x: not "auth_request_url" in x, funcs)) 
+    funcs = list(filter(lambda x: not "auth_request_url" in x, funcs))
+    funcs = ["status_reply", "status_expand", "status_boost"] + funcs
+    
     return sorted(funcs, key = prefix_val)
 
 class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
@@ -811,6 +826,8 @@ theme = {
     "ids": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
     "names": ansi_rgb(1.0, 1.0, 0.5),
+    "names_inline": ansi_rgb(0.7, 1.0, 0.7),
+    "names_notif": ansi_rgb(0.4, 0.5, 0.4),     
     "lines": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "titles": ansi_rgb(1.0, 1.0, 1.0),
     "prompt": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
