@@ -134,23 +134,33 @@ prompt_cli = None
 history = None
 
 # Mastodon API dict pretty printers
-def pprint_status(result_prefix, result, scrollback):
-    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["content"])
+def clean_text(text, style_names, style_text):
+    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', text)    
+    content_clean = content_clean.replace('<span class="h-card">', style_names)
+    content_clean = content_clean.replace('</span>', style_text)
+    content_clean = content_clean.replace("</p>", "\n")
+    content_clean = content_clean.replace("<br>", "\n")
     content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
     
+    content_split = []
+    for line in content_clean.split("\n"):
+        content_split.append(style_text + line)
+    return "\n".join(content_split)
+    
+def pprint_status(result_prefix, result, scrollback):
+    content_clean = clean_text(result["content"], theme["names"], theme["text"])
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
     
     avatar = get_avatar(result["account"]["avatar_static"])
 
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted, theme["visibility"] + status_icon) 
-    scrollback.print(avatar + " " + theme["text"] + content_clean + " ")
+    scrollback.print(avatar + " " + content_clean + " ")
     scrollback.print("")
     return
 
 def pprint_reblog(result_prefix, result, scrollback):
-    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["content"])
-    content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
+    content_clean = clean_text(result["content"], theme["names"], theme["text"])
     
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
@@ -159,20 +169,19 @@ def pprint_reblog(result_prefix, result, scrollback):
     
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
     scrollback.print(avatar + " " + theme["reblog"] + glyphs["reblog"] + " " + avatar_orig + " " + theme["names"] + result["reblog"]["account"]["acct"])  
-    scrollback.print(theme["text"] + content_clean)
+    scrollback.print(content_clean)
     scrollback.print("")
     return
 
 def pprint_notif(result_prefix, result, scrollback):
-    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', result["status"]["content"])
-    content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
+    content_clean = clean_text(result["status"]["content"], theme["names"], theme["text_notif"])
 
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
 
     scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-    scrollback.print(avatar + " " + theme[result["type"]] + glyphs[result["type"]] + " " + theme["text_notif"] + content_clean)
+    scrollback.print(avatar + " " + theme[result["type"]] + glyphs[result["type"]] + " " + content_clean)
     scrollback.print("")
     return
 
@@ -224,10 +233,10 @@ def align(left_part, right_part, width):
     max_spaces = max(width - (termwrap.ansilen_unicode(left_part) + termwrap.ansilen_unicode(right_part) - 1), 0)
     for i in reversed(range(max_spaces)):
         aligned = left_part + (" " * i) + right_part
-        result = termwrap.wrap(aligned, width)
+        result = termwrap.wrap_proper(aligned, width)
         if len(result) == 1:
             return result
-    return termwrap.wrap(left_part + " " + right_part, width)
+    return termwrap.wrap_proper(left_part + " " + right_part, width)
 
 # Scrollback column with internal "result history" buffer
 class Scrollback:
@@ -322,7 +331,7 @@ class Scrollback:
                 if right_side != None:
                     new_lines = align(line, right_side, text_width)
                 else:
-                    new_lines = termwrap.wrap(line, text_width)
+                    new_lines = termwrap.wrap_proper(line, text_width)
                 if len(new_lines) == 0:
                     new_lines = [""]
                 wrapped_lines.extend(new_lines)
@@ -872,7 +881,7 @@ def run_app():
                 
         command = re.sub(r'#([0-9]+)', r'last[\1]', command)
         command = re.sub(r'#', r'last', command)
-        command = re.sub(r'\.([0-9]+).([0-9]+)', r'buffers[\1].result_history[\2]', command)
+        command = re.sub(r'\.([0-9]+)\.([0-9]+)', r'buffers[\1].result_history[\2]', command)
         
         if command.find("=") == -1 or not py_direct:
             command = "__thread_res = (" + command + ")"

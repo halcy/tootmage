@@ -13,7 +13,7 @@ import os
 a_textwrap = imp.load_module('a_textwrap', *imp.find_module('textwrap3'))
 
 
-__all__ = 'wrap fill shorten strip_color ansilen ansilen_unicode ansi_terminate_lines'.split()
+__all__ = 'wrap fill shorten strip_color ansilen ansilen_unicode ansi_terminate_lines wrap_proper'.split()
 
 ANSIRE = re.compile('\x1b\\[(K|.*?m)')
 
@@ -40,6 +40,7 @@ def strip_color(s):
 def ansilen_unicode(s):
     if isinstance(s, string_types):
         s_without_ansi = unicodedata.normalize('NFC', ANSIRE.sub('', s))
+        s_without_ansi = s_without_ansi.replace("\n", "_")
         return sum(map(lambda c: max(wcwidth.wcwidth(c), 0), s_without_ansi))
     else:
         return len(s)
@@ -99,6 +100,27 @@ def wrap(s, width=70, **kwargs):
     wrapped = a_textwrap.wrap(s, width, **kwargs)
     return ansi_terminate_lines(wrapped)
 
+def wrap_proper(in_text, width):
+    """
+    Wrap text without mucking up the ansi escapes, for real.
+    
+    doesn't support indent because I do not need indent.
+    """
+    ansi_seqs = list(ANSIRE.finditer(in_text))
+    stripped_text = strip_color(in_text)
+    wrapped_text = wrap(stripped_text, width)
+    offset = 0
+    wrapped_ansi_text = []
+    for line in wrapped_text:
+        ansi_line = line
+        for match in ansi_seqs:
+            if match.start() - offset >= 0 and match.start() - offset < len(ansi_line):
+                match_text = in_text[match.start():match.end()]
+                ansi_line = ansi_line[:match.start() - offset] + match_text + ansi_line[match.start() - offset:]
+        offset += len(ansi_line)
+        wrapped_ansi_text.append(ansi_line)
+    wrapped_ansi_text = ansi_terminate_lines(wrapped_ansi_text)
+    return wrapped_ansi_text
 
 def fill(s, width=70, **kwargs):
     """
