@@ -380,15 +380,6 @@ class Scrollback:
             clear_line(print_width + 1)
             cursor_to(self.offset + 1, line_pos + 3)            
             sys.stdout.write(line)
-    
-buffers = [
-    Scrollback("0: home", 0, 50),
-    Scrollback("1: notifications", 51, 50),
-    Scrollback("2: local", 102, 50),
-    Scrollback("3: scratch", 153, 5000),
-]
-buffer_active = len(buffers) - 1
-buffers[buffer_active].set_active(True)
 
 watched = [
 ]
@@ -745,11 +736,6 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
         
     watch_start_thread = threading.Thread(target = watch_stream_internal, name = "start_watch", args = (function, scrollback, scrollback_notifications, initial_fill, initial_fill_notifications))
     watch_start_thread.start()
-    
-# Preamble: Create mastodon object
-MASTODON_BASE_URL = "https://icosahedron.website"
-m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secret', api_base_url = MASTODON_BASE_URL)
-m._acct = m.account_verify_credentials()["acct"]
 
 # Sorting... is complicated and phenomenological.
 def prefix_val(name):
@@ -839,50 +825,6 @@ class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
             else:
                 good_matches.append(match)
         return(best_matches + good_matches)
-
-# Column contents
-#watch(m.timeline, buffers[0]], 60)
-#watch(m.notifications, buffers[1], 60)
-#watch(m.timeline_local, buffers[2], 60)
-watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
-watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
-    
-theme = {
-    "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
-    "text_notif": ansi_reset() + ansi_rgb(0.5, 0.5, 0.5),
-    "ids": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
-    "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
-    "names": ansi_rgb(1.0, 1.0, 0.5),
-    "names_inline": ansi_rgb(0.7, 1.0, 0.7),
-    "names_notif": ansi_rgb(0.4, 0.5, 0.4), 
-    "cw": ansi_rgb(0.5, 1.0, 0.5),
-    "cw_notif": ansi_rgb(0.4, 0.5, 0.4),
-    "lines": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
-    "titles": ansi_rgb(1.0, 1.0, 1.0),
-    "prompt": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
-    "prompt_toolkit_tokens": {
-        "Default": ansi_rgb(1.0, 1.0, 1.0),
-        "Token.Search": ansi_rgb(1.0, 1.0, 0.5),
-        "Token.Search.Text": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
-        "Token.SearchMatch.Current": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
-        "Token.AutoSuggestion": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
-    },
-    "active": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
-    "reblog": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
-    "follow": ansi_rgb(128.0 / 255.0, 128.0 / 255.0, 255.0 / 255.0),
-    "favourite": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 128.0 / 255.0),
-    "visibility": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
-}
-
-glyphs = {
-    'reblog': '\U0000267a', # recycling symbol
-    'favourite': '\U00002605', # star
-    'follow': '➜', # arrow
-    'public': '\U0001f30e', # globe
-    'unlisted': '\U0001f47b', # ghost
-    'private': '\U0001f512', # lock
-    'direct': '\U0001f4e7', # envelope
-}
 
 # Start up and run REPL
 def run_app():    
@@ -989,5 +931,7 @@ def run_app():
             command = "__thread_res = (" + command + ")"
         
         eval_command_thread(orig_command, command, buffers[-1], expand_using = expand_using)
+
+exec(open("./settings.py").read())
 
 run_app()
