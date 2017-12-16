@@ -147,8 +147,13 @@ def clean_text(text, style_names, style_text):
         content_split.append(style_text + line)
     return "\n".join(content_split)
     
-def pprint_status(result_prefix, result, scrollback):
-    content_clean = clean_text(result["content"], theme["names_inline"], theme["text"])
+def pprint_status(result_prefix, result, scrollback, cw = False):
+    content_clean = ""
+    if result.spoiler_text != None and len(result.spoiler_text) > 0:
+        content_clean = theme["cw"] + "[CW: " + result.spoiler_text + "] "
+    if not cw or result.spoiler_text == None or len(result.spoiler_text) == 0:
+        content_clean += clean_text(result["content"], theme["names_inline"], theme["text"])
+        
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
     
@@ -159,9 +164,13 @@ def pprint_status(result_prefix, result, scrollback):
     scrollback.print("")
     return
 
-def pprint_reblog(result_prefix, result, scrollback):
-    content_clean = clean_text(result["content"], theme["names_inline"], theme["text"])
-    
+def pprint_reblog(result_prefix, result, scrollback, cw = False):
+    content_clean = ""
+    if result.spoiler_text != None and len(result.spoiler_text) > 0:
+        content_clean = theme["cw"] + "[CW: " + result.spoiler_text + "] "
+    if not cw or result.spoiler_text == None or len(result.spoiler_text) == 0:
+        content_clean += clean_text(result["content"], theme["names_inline"], theme["text"])
+        
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
@@ -173,9 +182,13 @@ def pprint_reblog(result_prefix, result, scrollback):
     scrollback.print("")
     return
 
-def pprint_notif(result_prefix, result, scrollback):
-    content_clean = clean_text(result["status"]["content"], theme["names_notif"], theme["text_notif"])
-
+def pprint_notif(result_prefix, result, scrollback, cw = False):
+    content_clean = ""
+    if result.status.spoiler_text != None and len(result.status.spoiler_text) > 0:
+        content_clean = theme["cw_notif"] + "[CW: " + result.status.spoiler_text + "] "
+    if not cw or result.status.spoiler_text == None or len(result.status.spoiler_text) == 0:
+        content_clean += clean_text(result["status"]["content"], theme["names_notif"], theme["text_notif"])
+        
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
@@ -194,12 +207,21 @@ def pprint_follow(result_prefix, result, scrollback):
     scrollback.print("")
     return
 
-def pprint_result(result, scrollback, result_prefix = "", not_pretty = False):
+def pprint_result(result, scrollback, result_prefix = "", not_pretty = False, cw = False, expand_using = None):
+    retval = None
+    if expand_using != None:
+        to_expand = result
+        if not "content" in to_expand:
+            to_expand = to_expand.status
+        context = expand_using.status_context(to_expand)
+        result = list(reversed(context.ancestors + [to_expand] + context.descendants))
+        retval = result
+        
     if isinstance(result, list):
         for num, sub_result in enumerate(reversed(result)):
             sub_result_prefix = str(len(result) - num - 1)
-            pprint_result(sub_result, scrollback, sub_result_prefix, not_pretty)
-        return
+            pprint_result(sub_result, scrollback, sub_result_prefix, not_pretty, cw = cw)
+        return retval
         
     if result_prefix != "":
         result_prefix = "#" + result_prefix.ljust(4)
@@ -207,18 +229,18 @@ def pprint_result(result, scrollback, result_prefix = "", not_pretty = False):
     if isinstance(result, dict):
         if "content" in result:
             if "reblog" in result and result["reblog"] != None:
-                pprint_reblog(result_prefix, result, scrollback)
+                pprint_reblog(result_prefix, result, scrollback, cw = cw)
             else:
-                pprint_status(result_prefix, result, scrollback)
+                pprint_status(result_prefix, result, scrollback, cw = cw)
             return
         
         if "type" in result:
             if result["type"] == "mention":
-                pprint_status(result_prefix, result["status"], scrollback)
+                pprint_status(result_prefix, result["status"], scrollback, cw = cw)
                 return
             
             if result["type"] in ["reblog", "favourite"]:
-                pprint_notif(result_prefix, result, scrollback)
+                pprint_notif(result_prefix, result, scrollback, cw = cw)
                 return
             
             if result["type"] == "follow":
@@ -270,7 +292,7 @@ class Scrollback:
             self.result_history[self.result_counter] = result
         else:
             self.result_history.append(result)
-        pprint_result(result, self, str(self.result_counter))
+        pprint_result(result, self, str(self.result_counter), cw = True)
         
     # Print to scrollback
     def print(self, x, right_side = None):
@@ -459,7 +481,7 @@ def app_update(context):
             funct, last_exec, exec_every, scrollback = watched_expr
             if time.time() - last_exec > exec_every:
                 watched_expr[1] = time.time()
-                eval_command_thread("", funct, scrollback, False)
+                eval_command_thread("", funct, scrollback, interactive = False)
         
         # Redraw main UI
         screen_update_once()
@@ -574,7 +596,7 @@ def read_line(history, key_registry):
 
 # Command evaluator thread
 last = None
-def eval_command(orig_command, command, scrollback, interactive = True):
+def eval_command(orig_command, command, scrollback, interactive = True, expand_using = None):
     global last
     
     if interactive:
@@ -600,17 +622,19 @@ def eval_command(orig_command, command, scrollback, interactive = True):
         else:
             if "__thread_res" in result_ns:
                 print_result = result_ns["__thread_res"]
-        pprint_result(print_result, scrollback)
+        pprint_retval = pprint_result(print_result, scrollback, cw = not interactive, expand_using = expand_using)
+        if pprint_retval != None:
+            last = pprint_retval
         
     except Exception as e:
-        scrollback.print(str(e))
+        scrollback.print(str(command) + " -> " + str(e))
 
-def eval_command_thread(orig_command, command, scrollback, interactive = True):
+def eval_command_thread(orig_command, command, scrollback, interactive = True, expand_using = None):
     thread_name = "command_runner"
     if interactive == False:
         thread_name = thread_name + "_bg"
         
-    exec_thread = threading.Thread(target = eval_command, name = thread_name, args = (orig_command, command, scrollback, interactive))
+    exec_thread = threading.Thread(target = eval_command, name = thread_name, args = (orig_command, command, scrollback, interactive, expand_using))
     exec_thread.start()
 
 # Set up keybindings
@@ -725,6 +749,7 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
 # Preamble: Create mastodon object
 MASTODON_BASE_URL = "https://icosahedron.website"
 m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secret', api_base_url = MASTODON_BASE_URL)
+m._acct = m.account_verify_credentials()["acct"]
 
 # Sorting... is complicated and phenomenological.
 def prefix_val(name):
@@ -773,6 +798,8 @@ def overrride_key(name):
     if name.endswith('boost'):
         return 0
     if name.endswith('expand'):
+        return 0
+    if name.endswith('toot'):
         return 0
     return 1
 
@@ -827,7 +854,9 @@ theme = {
     "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
     "names": ansi_rgb(1.0, 1.0, 0.5),
     "names_inline": ansi_rgb(0.7, 1.0, 0.7),
-    "names_notif": ansi_rgb(0.4, 0.5, 0.4),     
+    "names_notif": ansi_rgb(0.4, 0.5, 0.4), 
+    "cw": ansi_rgb(0.5, 1.0, 0.5),
+    "cw_notif": ansi_rgb(0.4, 0.5, 0.4),
     "lines": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "titles": ansi_rgb(1.0, 1.0, 1.0),
     "prompt": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
@@ -874,6 +903,7 @@ def run_app():
         
         # Starts with semicolon -> python command
         py_direct = False
+        expand_using = None
         if command[0] == ";":
             command = command[1:]
             py_direct = True
@@ -891,11 +921,66 @@ def run_app():
                 )
                 if len(potential_commands) > 0:
                     command_parts[0] = potential_commands[0].text
+                
+                # Special handling for boost, reply, expand commands
+                if command_parts[0] == "status_reply" and len(command_parts) >= 2:
+                    command_parts_new = []
+                    command_parts_new.append("status_post")
+                    
+                    if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
+                        command_parts[1] = "." + command_parts[1]
+                    
+                    in_reply_to = command_parts[1]
+                    in_reply_to = re.sub(r'#([0-9]+)', r'last[\1]', in_reply_to)
+                    in_reply_to = re.sub(r'#', r'last', in_reply_to)
+                    in_reply_to = re.sub(r'\.([0-9]+)\.([0-9]+)', r'buffers[\1].result_history[\2]', in_reply_to)
+                    
+                    try:
+                        in_reply_to_obj = eval(in_reply_to)
+                        if "mentions" not in in_reply_to_obj:
+                            command_parts[1] = command_parts[1] + ".status"
+                    except:
+                        pass
+                    
+                    toot_text = " ".join(command_parts[2:])
+                    toot_text = toot_text.replace("\"", "\\\"")
+                    toot_text = "\"" + toot_text + "\""
+                    toot_text = '"".join(map(lambda x: ("@" + x.acct + " ") if x.acct != m._acct else "", [' + \
+                        command_parts[1] + '.account] + ' + command_parts[1] + '.mentions)) + ' + toot_text
+                    command_parts_new.append(toot_text)
+                    
+                    command_parts_new.append(", in_reply_to_id=" + command_parts[1])
+                    command_parts_new.append(", sensitive=" + command_parts[1] + ".sensitive")
+                    command_parts_new.append(", spoiler_text=" + command_parts[1] + ".spoiler_text")
+                    
+                    command_parts = command_parts_new
+                
+                if command_parts[0] == "status_boost":
+                    command_parts[0] = "status_reblog"
+                    
+                if command_parts[0] in ["status_reblog", "status_favourite"]:
+                    if not command_parts[1].startswith("."):
+                        command_parts[1] = "." + command_parts[1]
+                
+                if command_parts[0] == "status_expand":
+                    command_parts = [command_parts[1]]
+                    if not command_parts[0].startswith("."):
+                        command_parts[0] = "." + command_parts[0]
+                    expand_using = m
+                
+                if command_parts[0] == "toot":
+                    toot_text = " ".join(command_parts[1:])
+                    toot_text = toot_text.replace("\"", "\\\"")
+                    toot_text = "\"" + toot_text + "\""
+                    command_parts = [command_parts[0], toot_text]
                     
                 # Build actual command
-                command = command_parts[0] + "(" + " ".join(command_parts[1:]) + ")"
-                command = "m." + command
-                
+                if expand_using == None:
+                    command = command_parts[0] + "(" + " ".join(command_parts[1:]) + ")"
+                    command = "m." + command
+                else:
+                    command = command_parts[0]
+                    
         command = re.sub(r'#([0-9]+)', r'last[\1]', command)
         command = re.sub(r'#', r'last', command)
         command = re.sub(r'\.([0-9]+)\.([0-9]+)', r'buffers[\1].result_history[\2]', command)
@@ -903,6 +988,6 @@ def run_app():
         if command.find("=") == -1 or not py_direct:
             command = "__thread_res = (" + command + ")"
         
-        eval_command_thread(orig_command, command, buffers[-1])
+        eval_command_thread(orig_command, command, buffers[-1], expand_using = expand_using)
 
 run_app()
