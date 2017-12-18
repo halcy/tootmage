@@ -24,6 +24,7 @@ from PIL import Image
 import io
 import numpy as np
 import math
+import subprocess
 
 # Patch prompt-toolkit a bit
 prompt_toolkit.keys.Keys.ControlPageUp = prompt_toolkit.keys.Key("<C-PageUp>")
@@ -474,6 +475,18 @@ def app_update(context):
                 watched_expr[1] = time.time()
                 eval_command_thread("", funct, scrollback, interactive = False)
         
+        for watched_handle_idx in range(len(watched_streams)):
+            if not watched_streams[watched_handle_idx][0].is_alive():
+                try:
+                    watched_streams[watched_handle_idx][0].close()
+                except:
+                    pass
+                watched_streams[watched_handle_idx] = (
+                    watched_streams[watched_handle_idx][1](watched_streams[watched_handle_idx][2], async = True),
+                    watched_streams[watched_handle_idx][1],
+                    watched_streams[watched_handle_idx][2]
+                )
+                
         # Redraw main UI
         screen_update_once()
         
@@ -589,6 +602,7 @@ def read_line(history, key_registry):
 last = None
 def eval_command(orig_command, command, scrollback, interactive = True, expand_using = None):
     global last
+    global buffers
     
     if interactive:
         scrollback.print("")
@@ -613,9 +627,15 @@ def eval_command(orig_command, command, scrollback, interactive = True, expand_u
         else:
             if "__thread_res" in result_ns:
                 print_result = result_ns["__thread_res"]
+                
+        if not isinstance(print_result, list) and expand_using == None:
+            print_result = [print_result]
+            last = [last]
+            
         pprint_retval = pprint_result(print_result, scrollback, cw = not interactive, expand_using = expand_using)
         if pprint_retval != None:
             last = pprint_retval
+        buffers[-1].result_history = last
         
     except Exception as e:
         scrollback.print(str(command) + " -> " + str(e))
@@ -732,7 +752,7 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
                     notification_event_handler(result)
                 
         result_collector = EventCollector(event_handler, notification_event_handler)
-        watched_streams.append(function(result_collector, async = True))
+        watched_streams.append((function(result_collector, async = True), function, result_collector))
         
     watch_start_thread = threading.Thread(target = watch_stream_internal, name = "start_watch", args = (function, scrollback, scrollback_notifications, initial_fill, initial_fill_notifications))
     watch_start_thread.start()
@@ -787,6 +807,8 @@ def overrride_key(name):
         return 0
     if name.endswith('toot'):
         return 0
+    if name.endswith('view'):
+        return 0
     return 1
 
 def combined_key(name):
@@ -801,7 +823,7 @@ def get_func_names():
     funcs = list(filter(lambda x: not "create_app" in x, funcs))
     funcs = list(filter(lambda x: not "create_app" in x, funcs))
     funcs = list(filter(lambda x: not "auth_request_url" in x, funcs))
-    funcs = ["status_reply", "status_expand", "status_boost"] + funcs
+    funcs = ["status_reply", "status_expand", "status_boost", "status_view"] + funcs
     
     return sorted(funcs, key = prefix_val)
 
@@ -873,8 +895,8 @@ def run_app():
                         command_parts[1] = "." + command_parts[1]
                     
                     in_reply_to = command_parts[1]
-                    in_reply_to = re.sub(r'#([0-9]+)', r'last[\1]', in_reply_to)
-                    in_reply_to = re.sub(r'#', r'last', in_reply_to)
+                    in_reply_to = re.sub(r'#([0-9]+)', r'buffers[' + str(buffer_active) + r'].result_history[\1]', in_reply_to)
+                    in_reply_to = re.sub(r'#', r'buffers[' + str(buffer_active) + '].result_history', in_reply_to)
                     in_reply_to = re.sub(r'\.([0-9]+)\.([0-9]+)', r'buffers[\1].result_history[\2]', in_reply_to)
                     
                     try:
@@ -900,8 +922,8 @@ def run_app():
                 if command_parts[0] == "status_boost":
                     command_parts[0] = "status_reblog"
                     
-                if command_parts[0] in ["status_reblog", "status_favourite"]:
-                    if not command_parts[1].startswith("."):
+                if command_parts[0] in ["status_reblog", "status_favourite", "status_view"]:
+                    if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
                         command_parts[1] = "." + command_parts[1]
                 
                 if command_parts[0] == "status_expand":
@@ -916,15 +938,20 @@ def run_app():
                     toot_text = "\"" + toot_text + "\""
                     command_parts = [command_parts[0], toot_text]
                     
-                # Build actual command
-                if expand_using == None:
-                    command = command_parts[0] + "(" + " ".join(command_parts[1:]) + ")"
-                    command = "m." + command
-                else:
-                    command = command_parts[0]
+                if command_parts[0] == "status_view":
+                    command = "subprocess.call(list(map(lambda x: x.replace('{}', " + command_parts[1] + ".url or " + command_parts[1] + ".reblog.url), view_command)))"
+                    py_direct = True
                     
-        command = re.sub(r'#([0-9]+)', r'last[\1]', command)
-        command = re.sub(r'#', r'last', command)
+                # Build actual command
+                if  py_direct == False:
+                    if expand_using == None:
+                        command = command_parts[0] + "(" + " ".join(command_parts[1:]) + ")"
+                        command = "m." + command
+                    else:
+                        command = command_parts[0]
+                    
+        command = re.sub(r'#([0-9]+)', r'buffers[' + str(buffer_active) + r'].result_history[\1]', command)
+        command = re.sub(r'#', r'buffers[' + str(buffer_active) + '].result_history', command)
         command = re.sub(r'\.([0-9]+)\.([0-9]+)', r'buffers[\1].result_history[\2]', command)
         
         if command.find("=") == -1 or not py_direct:

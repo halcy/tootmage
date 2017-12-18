@@ -22,3 +22,7 @@ buffers[buffer_active].set_active(True)
 #watch(m.timeline_local, buffers[2], 60)
 watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
 watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
+
+# Viewing
+view_command = ["firefox", "{}"]
+view_command_media = ["firefox", "{}"]
