@@ -116,8 +116,8 @@ def wrap_proper(in_text, width):
         for match in ansi_seqs:
             if match.start() - offset >= 0 and match.start() - offset < len(ansi_line):
                 match_text = in_text[match.start():match.end()]
-                ansi_line = ansi_line[:match.start() - offset] + match_text + ansi_line[match.start() - offset:]
-        offset += len(ansi_line)
+                ansi_line = ansi_line[:match.start() - offset] + match_text + ansi_line[match.start() - offset:] # TODO refresh more
+        offset += len(ansi_line) + 1 
         wrapped_ansi_text.append(ansi_line)
     wrapped_ansi_text = ansi_terminate_lines(wrapped_ansi_text)
     return wrapped_ansi_text

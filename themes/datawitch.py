@@ -5,6 +5,7 @@ theme = {
     "ids": ansi_rgb(255.0 / 255.0, 0.0 / 255.0, 128.0 / 255.0),
     "dates": ansi_rgb(0.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0),
     "names": ansi_rgb(1.0, 1.0, 0.5),
+    "url_nums": ansi_rgb(0.7, 0.3, 0.7),
     "names_inline": ansi_rgb(0.7, 1.0, 0.7),
     "names_notif": ansi_rgb(0.4, 0.5, 0.4), 
     "cw": ansi_rgb(0.5, 1.0, 0.5),

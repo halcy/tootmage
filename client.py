@@ -25,6 +25,9 @@ import io
 import numpy as np
 import math
 import subprocess
+import copy
+
+quitting = False
 
 # Patch prompt-toolkit a bit
 prompt_toolkit.keys.Keys.ControlPageUp = prompt_toolkit.keys.Key("<C-PageUp>")
@@ -138,23 +141,37 @@ history = None
 def clean_text(text, style_names, style_text):
     content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', text)    
     content_clean = content_clean.replace('<span class="h-card">', style_names)
+    content_clean = content_clean.replace('</span><span class="ellipsis">', "")
+    content_clean = content_clean.replace('</span><span class="invisible">', "")
     content_clean = content_clean.replace('</span>', style_text)
     content_clean = content_clean.replace("</p>", "\n")
-    content_clean = content_clean.replace("<br>", "\n")
+    content_clean = re.sub(r"<br[^>]*>", "\n", content_clean)
     content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
     
     content_split = []
     for line in content_clean.split("\n"):
         content_split.append(style_text + line)
     return "\n".join(content_split)
-    
+
+def number_urls(text, style_url_nums, style_text): # TODO: Does not find media without URLs (oof)
+    urls = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+    url_num = 0
+    replaced_urls = []
+    for url in urls:
+        if not url in replaced_urls:
+            text = text.replace(url, style_url_nums + "(" + str(url_num) + ")" + style_text + " " + url)
+            replaced_urls.append(url)
+            url_num += 1
+    return text, replaced_urls
+
 def pprint_status(result_prefix, result, scrollback, cw = False):
     content_clean = ""
     if result.spoiler_text != None and len(result.spoiler_text) > 0:
         content_clean = theme["cw"] + "[CW: " + result.spoiler_text + "] "
     if not cw or result.spoiler_text == None or len(result.spoiler_text) == 0:
         content_clean += clean_text(result["content"], theme["names_inline"], theme["text"])
-        
+    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text"])
+    
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
     
@@ -171,7 +188,8 @@ def pprint_reblog(result_prefix, result, scrollback, cw = False):
         content_clean = theme["cw"] + "[CW: " + result.spoiler_text + "] "
     if not cw or result.spoiler_text == None or len(result.spoiler_text) == 0:
         content_clean += clean_text(result["content"], theme["names_inline"], theme["text"])
-        
+    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text"])
+    
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
@@ -189,7 +207,8 @@ def pprint_notif(result_prefix, result, scrollback, cw = False):
         content_clean = theme["cw_notif"] + "[CW: " + result.status.spoiler_text + "] "
     if not cw or result.status.spoiler_text == None or len(result.status.spoiler_text) == 0:
         content_clean += clean_text(result["status"]["content"], theme["names_notif"], theme["text_notif"])
-        
+    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text_notif"])
+    
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
@@ -460,6 +479,9 @@ class StoreTokens(prompt_toolkit.layout.processors.Processor):
         return prompt_toolkit.layout.processors.Transformation(tokens)
     
 def app_update(context):
+    if quitting:
+        return
+    
     global title_offset
     global title_dirty
     global watched
@@ -645,7 +667,7 @@ def eval_command_thread(orig_command, command, scrollback, interactive = True, e
     if interactive == False:
         thread_name = thread_name + "_bg"
         
-    exec_thread = threading.Thread(target = eval_command, name = thread_name, args = (orig_command, command, scrollback, interactive, expand_using))
+    exec_thread = threading.Thread(target = eval_command, daemon = True, name = thread_name, args = (orig_command, command, scrollback, interactive, expand_using))
     exec_thread.start()
 
 # Set up keybindings
@@ -729,6 +751,27 @@ class EventCollector(StreamListener):
             self.event_handler(status)
             
     def on_notification(self, notification):
+        # Pop up notification
+        user = "@" + notification.account.acct
+        if notification.type == "mention":
+            user += " mentioned you:"
+        if notification.type == "reblog":
+            user += " boosted:"
+        if notification.type == "favourite":
+            user += " favourited:"
+        if notification.type == "follow":
+            user += " followed you."
+        
+        text = ""
+        if  "status" in notification and notification.status != None:
+            text = clean_text(notification.status.content, "", "")
+        
+        notify_command_temp = copy.deepcopy(notify_command)
+        notify_command_temp = list(map(lambda x: x.replace('{user}', user), notify_command_temp))
+        notify_command_temp = list(map(lambda x: x.replace('{text}', text), notify_command_temp))
+        subprocess.call(notify_command_temp)
+        
+        # Run handler
         if self.notification_event_handler != None:
             self.notification_event_handler(notification)
         
@@ -754,7 +797,7 @@ def watch_stream(function, scrollback = None, scrollback_notifications = None, i
         result_collector = EventCollector(event_handler, notification_event_handler)
         watched_streams.append((function(result_collector, async = True), function, result_collector))
         
-    watch_start_thread = threading.Thread(target = watch_stream_internal, name = "start_watch", args = (function, scrollback, scrollback_notifications, initial_fill, initial_fill_notifications))
+    watch_start_thread = threading.Thread(target = watch_stream_internal, daemon = True, name = "start_watch", args = (function, scrollback, scrollback_notifications, initial_fill, initial_fill_notifications))
     watch_start_thread.start()
 
 # Sorting... is complicated and phenomenological.
@@ -809,6 +852,8 @@ def overrride_key(name):
         return 0
     if name.endswith('view'):
         return 0
+    if name.endswith('quit'):
+        return 0
     return 1
 
 def combined_key(name):
@@ -823,7 +868,7 @@ def get_func_names():
     funcs = list(filter(lambda x: not "create_app" in x, funcs))
     funcs = list(filter(lambda x: not "create_app" in x, funcs))
     funcs = list(filter(lambda x: not "auth_request_url" in x, funcs))
-    funcs = ["status_reply", "status_expand", "status_boost", "status_view"] + funcs
+    funcs = ["quit", "status_reply", "status_expand", "status_boost", "status_view"] + funcs
     
     return sorted(funcs, key = prefix_val)
 
@@ -922,14 +967,12 @@ def run_app():
                 if command_parts[0] == "status_boost":
                     command_parts[0] = "status_reblog"
                     
-                if command_parts[0] in ["status_reblog", "status_favourite", "status_view"]:
+                if command_parts[0].startswith("status_"):
                     if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
                         command_parts[1] = "." + command_parts[1]
                 
                 if command_parts[0] == "status_expand":
                     command_parts = [command_parts[1]]
-                    if not command_parts[0].startswith("."):
-                        command_parts[0] = "." + command_parts[0]
                     expand_using = m
                 
                 if command_parts[0] == "toot":
@@ -939,9 +982,20 @@ def run_app():
                     command_parts = [command_parts[0], toot_text]
                     
                 if command_parts[0] == "status_view":
-                    command = "subprocess.call(list(map(lambda x: x.replace('{}', " + command_parts[1] + ".url or " + command_parts[1] + ".reblog.url), view_command)))"
+                    if len(command_parts) <= 2:
+                        url_str = command_parts[1] + ".url if 'url' in " + command_parts[1] + \
+                            " else (" + command_parts[1] + ".reblog.url if 'reblog' in " + \
+                            command_parts[1] + " else " + command_parts[1] + ".status.url)"
+                    else:
+                        url_str = command_parts[1] + '["__urls"][' +  command_parts[2] + ']'
+                    command = "subprocess.call(list(map(lambda x: x.replace('{url}', " + url_str + "), view_command)))"
                     py_direct = True
-                    
+                
+                if command_parts[0] == "quit":
+                    for thread in watched_streams:
+                        thread[0].close()
+                    sys.exit(0)
+                
                 # Build actual command
                 if  py_direct == False:
                     if expand_using == None:
