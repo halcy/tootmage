@@ -32,6 +32,7 @@ additional commands:
 * "status_reply status text" (short r): does magic to automatically prepend the correct mentions to your post and maintain CWs and such. Also auto-quotes.
 * "status_view status number": (short v): runs a function (specified in the settings) with the url of the toot as parameter. optionally pass a number as the second parameter to view a numbered url in a toot. the default settings just open firefox, but you could also e.g. make the command put the URL in a HTML file that you can then look at in your browser
 * "status_expand status" (short x): expands a conversation
+* "quit": does that
 
 things that are bad still and/or known bugs
 * visibility is not retained in replies
