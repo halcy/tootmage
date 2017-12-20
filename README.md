@@ -22,16 +22,16 @@ basic operation:
 * Commands are autocompleted either when you hit tab, or when they are executed (hit enter). You can enter commands in shortened form, i.e. enter s-p instead of status_post, or just "r" for "status_reply". Use tab autompletion to discover many more shortcuts.
 * You can autocomplete usernames by entering the start of the username (starting with an @) and pressing tab.
 * You can refer to entries in columns while typing your command by entering ".columnnumber.resultnumber". You can refer to the entries of the active column using "#resultnumber"
-* To view a status, enter ".columnnumber.resultnumber" or #resultnumber" with no further commands - this also expands CWs.
+* To view a toot, enter ".columnnumber.resultnumber" or #resultnumber" with no further commands - this also expands CWs.
 * You can actually straight up enter python commands - prefix them with ;
-* If the full version of the entered command starts with "status", the first "." in the first status parameter is optional
+* If the full version of the entered command starts with "status", the first "." in the first toot parameter is optional
 
 additional commands:
 * "toot text" (short t): posts a toot. text is automatically quoted (quotes are escaped)
-* "status_boost (short b)": synonym for status_reblog
-* "status_reply status text" (short r): does magic to automatically prepend the correct mentions to your post and maintain CWs and such. Also auto-quotes.
-* "status_view status number": (short v): runs a function (specified in the settings) with the url of the toot as parameter. optionally pass a number as the second parameter to view a numbered url in a toot. the default settings just open firefox, but you could also e.g. make the command put the URL in a HTML file that you can then look at in your browser
-* "status_expand status" (short x): expands a conversation
+* "status_boost toot" (short b): synonym for status_reblog
+* "status_reply toot text" (short r): does magic to automatically prepend the correct mentions to your post and maintain CWs and such. Also auto-quotes.
+* "status_view toot number": (short v): runs a function (specified in the settings) with the url of the toot as parameter. optionally pass a number as the second parameter to view a numbered url in a toot. the default settings just open firefox, but you could also e.g. make the command put the URL in a HTML file that you can then look at in your browser
+* "status_expand toot" (short x): expands a conversation
 * "quit": does that
 
 things that are bad still and/or known bugs
