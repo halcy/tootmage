@@ -36,6 +36,7 @@ additional commands:
 
 things that are bad still and/or known bugs
 * visibility is not retained in replies
+* can't scroll horizontally yet - hope your screen is wide enough (overflow gets cut off on the right)
 * currently no easy way to specify CW, visibility, attach media - have to use the full status_post command to do it
 * everything is a bit user-unfriendly
 * documentation is bad
