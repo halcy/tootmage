@@ -1,4 +1,6 @@
 # datawitch theme for tootmage. uses rgb ansi as well as unicode icons.
+theme_col_mode = "rgb"
+
 theme = {
     "text": ansi_reset() + ansi_rgb(1.0, 1.0, 1.0),
     "text_notif": ansi_reset() + ansi_rgb(0.5, 0.5, 0.5),
@@ -24,7 +26,7 @@ theme = {
     "reblog": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
     "follow": ansi_rgb(128.0 / 255.0, 128.0 / 255.0, 255.0 / 255.0),
     "favourite": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 128.0 / 255.0),
-    "visibility": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0),
+    "visibility": ansi_rgb(128.0 / 255.0, 255.0 / 255.0, 0.0 / 255.0), 
 }
 
 glyphs = {
@@ -35,4 +37,6 @@ glyphs = {
     'unlisted': '\U0001f47b', # ghost
     'private': '\U0001f512', # lock
     'direct': '\U0001f4e7', # envelope
+    'line': "═",
+    'avatar': "█"
 }

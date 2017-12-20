@@ -41,7 +41,9 @@ def ansi_rgb(r, g, b):
     r = int(round(r * 255.0))
     g = int(round(g * 255.0))
     b = int(round(b * 255.0))
-    return "\33[38;2;{};{};{}m".format(str(r), str(g), str(b))
+    if theme_col_mode == "rgb":
+        return "\33[38;2;{};{};{}m".format(str(r), str(g), str(b))
+    return ""
 
 def ansi_clear():
     return "\33[2J"
@@ -72,7 +74,7 @@ def clear_screen():
     sys.stdout.write('\033[2J')
 
 def draw_line(style, line_len):
-    sys.stdout.write(style + ("═" * line_len))
+    sys.stdout.write(style + (glyphs["line"] * line_len))
     
 # Avatar tools
 avatar_cache = {}
@@ -128,7 +130,7 @@ def get_avatar_cols(avatar_url):
                 primary_cols.append(primary_cols[0])
     return primary_cols
 
-def get_avatar(avatar_url, avatar_char = "█"):
+def get_avatar(avatar_url):
     if avatar_url in avatar_cache:
         return avatar_cache[avatar_url]
     else:
@@ -136,9 +138,9 @@ def get_avatar(avatar_url, avatar_char = "█"):
             avatar_cols = get_avatar_cols(avatar_url)
             avatar = ""
             for col in avatar_cols:
-                avatar = avatar + ansi_rgb(*col) + avatar_char
+                avatar = avatar + ansi_rgb(*col) + glyphs["avatar"]
         except:
-            avatar = ansi_rgb(0, 0, 0) + (avatar_char * 4) # TODO use handle hash avatar instead
+            avatar = ansi_rgb(0, 0, 0) + (glyphs["avatar"] * 4) # TODO use handle hash avatar instead
         avatar_cache[avatar_url] = avatar
         return avatar
 
@@ -249,10 +251,10 @@ def pprint_account(result_prefix, result, scrollback, cw = False):
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S %d %b %Y')
     avatar = get_avatar(result["avatar_static"])
 
-    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["acct"] + " | " + result["display_name"])
-    scrollback.print(avatar + " " + content_clean + " ")
-    scrollback.print(theme["text"] + "Known since " + theme["dates"] + time_formatted)
-    scrollback.print(theme["text"] + "Loc. statuses: " + theme["names_inline"] + str(result["statuses_count"]) + \
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["acct"] + " | " + result["display_name"] + " " + avatar)
+    scrollback.print(content_clean)
+    scrollback.print(theme["text"] + "* Known since " + theme["dates"] + time_formatted)
+    scrollback.print(theme["text"] + "* Loc. statuses: " + theme["names_inline"] + str(result["statuses_count"]) + \
         theme["text"] + ", Loc. followers: " + theme["names_inline"] + str(result["followers_count"]) + \
         theme["text"] + ". Loc. following: " + theme["names_inline"] + str(result["following_count"])
     )
@@ -379,11 +381,11 @@ class Scrollback:
             
             # Move to start and draw header
             cursor_to(self.offset + 1, 1)
-            title_style = theme["titles"]
             if self.active:
-                title_style = theme["active"]
-            sys.stdout.write(title_style + self.title)
-            
+                sys.stdout.write(theme["active"] + self.title + " #")
+            else:
+                sys.stdout.write(theme["titles"] + self.title + "  ")
+                                
             cursor_to(self.offset, 2)
             line_style = theme["lines"]
             if self.active:

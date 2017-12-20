@@ -3,6 +3,7 @@ import subprocess
 
 # Load theme
 exec(open("./themes/datawitch.py").read())
+#exec(open("./themes/helvetica_standard.py").read())
 
 # Create mastodon object
 MASTODON_BASE_URL = "https://icosahedron.website"
@@ -20,9 +21,6 @@ buffer_active = len(buffers) - 1
 buffers[buffer_active].set_active(True)
 
 # Column contents
-#watch(m.timeline, buffers[0]], 60)
-#watch(m.notifications, buffers[1], 60)
-#watch(m.timeline_local, buffers[2], 60)
 watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
 watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
 
