@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 # Load theme
 exec(open("./themes/datawitch.py").read())
@@ -26,6 +27,11 @@ watch_stream(m.stream_user, buffers[0], buffers[1], m.timeline, m.notifications)
 watch_stream(m.stream_local, buffers[2], initial_fill = m.timeline_local)
 
 # Viewing and notifications
-view_command = ["firefox", "{url}"]
-view_command_urls = ["firefox", "{url}"]
-notify_command = [os.path.dirname(os.path.realpath(__file__)) + "/notify.sh", "{user}", "{text}"]
+def open_browser(url):
+    subprocess.call(["firefox", url])
+
+def dbus_notify(user, text):
+    subprocess.call([os.path.dirname(os.path.realpath(__file__)) + "/notify.sh", user, text])
+    
+view_command = open_browser
+notify_command = dbus_notify

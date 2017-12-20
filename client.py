@@ -26,6 +26,7 @@ import numpy as np
 import math
 import subprocess
 import copy
+import warnings
 
 quitting = False
 
@@ -79,7 +80,7 @@ def get_avatar_cols(avatar_url):
     avatar_resp = requests.get(avatar_url)
     avatar_image = Image.open(io.BytesIO(avatar_resp.content))
     avatar_image = avatar_image.resize((60, 60))
-    avatar_image = avatar_image.convert('RGBA').convert('HSV')
+    avatar_image = avatar_image.convert('RGBA').convert('RGB').convert('HSV')
     avatar = avatar_image.load()
 
     hue_bins = list(map(lambda x: [], range(1 + 255 // 10)))
@@ -98,20 +99,33 @@ def get_avatar_cols(avatar_url):
 
     hues_sorted = [x for _, x in sorted(zip(hue_weights, hue_bins))]
     primary_cols = []
+    all_most_common_cols = []
     for hue in reversed(hues_sorted[-4:]):
-        try:
-            most_common_col = np.array(max(set(hue), key=hue.count))
-            median_col = np.median(hue, axis = 0)
-
-            sameyness = 0.0
-            if len(primary_cols) > 0:
-                for col in primary_cols:
-                    sameyness += np.linalg.norm(np.array(col) / 255.0 - np.array(most_common_col) / 255.0)
-                sameyness = min(sameyness / len(primary_cols), 1.0)
-            weighted_col = (sameyness * median_col + (1.0 - sameyness) * most_common_col) / 255.0
-            primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*weighted_col))))
-        except:
-            primary_cols.append(primary_cols[0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            try:
+                most_common_cols = list(reversed(sorted(set(hue), key=hue.count)))
+                all_most_common_cols = most_common_cols + all_most_common_cols
+                found_col = False
+                for test_col in np.array(all_most_common_cols):
+                    worst_difference = 100.0
+                    if len(primary_cols) > 0:
+                        for col in primary_cols:
+                            worst_difference = min(np.linalg.norm(
+                                col - np.array(colorsys.hsv_to_rgb(*test_col / 255.0)) 
+                            ), worst_difference)
+                    else:
+                        worst_difference = 100.0
+                        
+                    if worst_difference > 0.2:
+                        found_col = True
+                        primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*(test_col / 255.0)))))
+                        break                    
+                if not found_col:
+                    median_col = np.median(hue, axis = 0)
+                    primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*(median_col / 255.0)))))
+            except:
+                primary_cols.append(primary_cols[0])
     return primary_cols
 
 def get_avatar(avatar_url, avatar_char = "█"):
@@ -788,10 +802,7 @@ class EventCollector(StreamListener):
         if  "status" in notification and notification.status != None:
             text = clean_text(notification.status.content, "", "")
         
-        notify_command_temp = copy.deepcopy(notify_command)
-        notify_command_temp = list(map(lambda x: x.replace('{user}', user), notify_command_temp))
-        notify_command_temp = list(map(lambda x: x.replace('{text}', text), notify_command_temp))
-        subprocess.call(notify_command_temp)
+        notify_command(user, text)
         
         # Run handler
         if self.notification_event_handler != None:
@@ -1012,12 +1023,12 @@ def run_app():
                     
                 if command_parts[0] == "status_view":
                     if len(command_parts) <= 2:
-                        url_str = command_parts[1] + ".url if 'url' in " + command_parts[1] + \
-                            " else (" + command_parts[1] + ".reblog.url if 'reblog' in " + \
-                            command_parts[1] + " else " + command_parts[1] + ".status.url)"
+                        url_str = command_parts[1] + ".reblog.url if 'reblog' in " + command_parts[1] + " else (" + \
+                            command_parts[1] + ".status.url if 'status' in " + command_parts[1] + " else " + \
+                            command_parts[1] + ".url)"
                     else:
                         url_str = command_parts[1] + '["__urls"][' +  command_parts[2] + ']'
-                    command = "subprocess.call(list(map(lambda x: x.replace('{url}', " + url_str + "), view_command)))"
+                    command = "view_command(" + url_str + ")"
                     py_direct = True
                 
                 if command_parts[0] == "quit":
