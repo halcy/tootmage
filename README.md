@@ -3,7 +3,7 @@ multicolumn terminal mastodon client for shitty nerds.
 
 currently in an extremely alpha here-be-dragons state. code contributions, suggestions, issues and such now welcome.
 
-setup.py forthcoming At Some Point (write me one, please!). Needs prompt-toolkit and possibly a bunch of other stuff.
+setup.py forthcoming At Some Point (write me one, please!). Needs prompt-toolkit, mastodon.py from github (1.2.0 will work badly, 1.2.1 will be fine when I getaround to releasing it) and possibly a bunch of other stuff.
 
 termwrap is an improved version of ansiwrap (https://github.com/jonathaneunice/ansiwrap) that works with unicode.
 
