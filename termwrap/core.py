@@ -106,6 +106,12 @@ def wrap_proper(in_text, width):
     
     doesn't support indent because I do not need indent.
     """
+    lines = []
+    for line in in_text.split("\n"):
+        lines.extend(wrap_proper_line(line, width))
+    return lines
+
+def wrap_proper_line(in_text, width):
     ansi_seqs = list(ANSIRE.finditer(in_text))
     stripped_text = strip_color(in_text)
     wrapped_text = wrap(stripped_text, width)
@@ -117,7 +123,7 @@ def wrap_proper(in_text, width):
             if match.start() - offset >= 0 and match.start() - offset < len(ansi_line):
                 match_text = in_text[match.start():match.end()]
                 ansi_line = ansi_line[:match.start() - offset] + match_text + ansi_line[match.start() - offset:] # TODO refresh more
-        offset += len(ansi_line) + 1 
+        offset += len(ansi_line)
         wrapped_ansi_text.append(ansi_line)
     wrapped_ansi_text = ansi_terminate_lines(wrapped_ansi_text)
     return wrapped_ansi_text
