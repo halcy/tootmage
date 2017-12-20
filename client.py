@@ -143,6 +143,7 @@ def clean_text(text, style_names, style_text):
     content_clean = content_clean.replace('<span class="h-card">', style_names)
     content_clean = content_clean.replace('</span><span class="ellipsis">', "")
     content_clean = content_clean.replace('</span><span class="invisible">', "")
+    content_clean = re.sub(r'</span><span class="[^"]*">', '', content_clean)
     content_clean = content_clean.replace('</span>', style_text)
     content_clean = content_clean.replace("</p>", "\n")
     content_clean = re.sub(r"<br[^>]*>", "\n", content_clean)
@@ -227,6 +228,23 @@ def pprint_follow(result_prefix, result, scrollback):
     scrollback.print("")
     return
 
+def pprint_account(result_prefix, result, scrollback, cw = False):
+    content_clean = clean_text(result["note"], theme["names_inline"], theme["text"])
+    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text"])
+    
+    time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S %d %b %Y')
+    avatar = get_avatar(result["avatar_static"])
+
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["acct"] + " | " + result["display_name"])
+    scrollback.print(avatar + " " + content_clean + " ")
+    scrollback.print(theme["text"] + "Known since " + theme["dates"] + time_formatted)
+    scrollback.print(theme["text"] + "Loc. statuses: " + theme["names_inline"] + str(result["statuses_count"]) + \
+        theme["text"] + ", Loc. followers: " + theme["names_inline"] + str(result["followers_count"]) + \
+        theme["text"] + ". Loc. following: " + theme["names_inline"] + str(result["following_count"])
+    )
+    scrollback.print("")    
+    return
+
 def pprint_result(result, scrollback, result_prefix = "", not_pretty = False, cw = False, expand_using = None):
     retval = None
     if expand_using != None:
@@ -266,7 +284,11 @@ def pprint_result(result, scrollback, result_prefix = "", not_pretty = False, cw
             if result["type"] == "follow":
                 pprint_follow(result_prefix, result, scrollback)
                 return
-            
+        
+        if "acct" in result:
+            pprint_account(result_prefix, result, scrollback)
+            return
+        
     scrollback.print(theme["text"] + pprint.pformat(result))
 
 # Combines two strings, trying to align one left and the other right,
