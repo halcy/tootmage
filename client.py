@@ -607,7 +607,7 @@ def read_line(history, key_registry):
     global prompt_cli
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows)
-    completer = MastodonFuncCompleter()
+    completer = MastodonFuncCompleter(m)
     prompt_app = create_bottom_repl_application(
         history = history,
         key_bindings_registry = key_registry,
@@ -873,19 +873,28 @@ def get_func_names():
     return sorted(funcs, key = prefix_val)
 
 class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
-    def __init__(self):
+    def __init__(self, api):
         self.base_completer = prompt_toolkit.contrib.completers.WordCompleter(get_func_names(), ignore_case = True, match_middle = True)
-    
+        self.cached_usernames = {}
+        self.complete_names_with = api
+        
     def get_completions(self, document, complete_event):
         completion_text = document.text.replace("-", "_")
         comp_document = prompt_toolkit.document.Document(completion_text, document.cursor_position)
+        match_text = comp_document.get_word_before_cursor(WORD=True)
+        
+        if match_text.startswith("@"):
+            if not match_text in self.cached_usernames:
+                name_matches = self.complete_names_with.account_search(match_text[1:])
+                self.cached_usernames[match_text] = list(map(lambda x: "@" + x.acct, name_matches))
+            name_completer = prompt_toolkit.contrib.completers.WordCompleter(self.cached_usernames[match_text], ignore_case = True, match_middle = True, WORD=True)
+            return name_completer.get_completions(comp_document, complete_event)
         
         base_completions = list(self.base_completer.get_completions(comp_document, complete_event))
         base_completions = sorted(base_completions, key = combined_key)
         
         best_matches = []
         good_matches = []
-        match_text = comp_document.get_word_before_cursor(WORD=False)
         for match in base_completions:
             if suffix_key(match.text).startswith(match_text):
                 best_matches.append(match)
@@ -924,20 +933,22 @@ def run_app():
             else:
                 # Direct command -> autocomplete
                 command_parts = command.split(" ")
-                potential_commands = MastodonFuncCompleter().get_completions(
+                potential_commands = MastodonFuncCompleter(m).get_completions(
                     prompt_toolkit.document.Document(command_parts[0]),
                     prompt_toolkit.completion.CompleteEvent(False, True)
                 )
                 if len(potential_commands) > 0:
                     command_parts[0] = potential_commands[0].text
                 
+                # Dotify command part if unambiguously needed
+                if command_parts[0].startswith("status_"):
+                    if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
+                        command_parts[1] = "." + command_parts[1]
+                
                 # Special handling for boost, reply, expand commands
                 if command_parts[0] == "status_reply" and len(command_parts) >= 2:
                     command_parts_new = []
                     command_parts_new.append("status_post")
-                    
-                    if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
-                        command_parts[1] = "." + command_parts[1]
                     
                     in_reply_to = command_parts[1]
                     in_reply_to = re.sub(r'#([0-9]+)', r'buffers[' + str(buffer_active) + r'].result_history[\1]', in_reply_to)
@@ -966,10 +977,6 @@ def run_app():
                 
                 if command_parts[0] == "status_boost":
                     command_parts[0] = "status_reblog"
-                    
-                if command_parts[0].startswith("status_"):
-                    if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
-                        command_parts[1] = "." + command_parts[1]
                 
                 if command_parts[0] == "status_expand":
                     command_parts = [command_parts[1]]
