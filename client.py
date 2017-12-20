@@ -27,6 +27,7 @@ import math
 import subprocess
 import copy
 import warnings
+import getpass
 
 quitting = False
 
@@ -36,6 +37,41 @@ prompt_toolkit.keys.Keys.ControlPageDown = prompt_toolkit.keys.Key("<C-PageDown>
 prompt_toolkit.terminal.vt100_input.ANSI_SEQUENCES['\x1b[5;5~'] = prompt_toolkit.keys.Keys.ControlPageUp
 prompt_toolkit.terminal.vt100_input.ANSI_SEQUENCES['\x1b[6;5~'] = prompt_toolkit.keys.Keys.ControlPageDown
 
+def ensure_app_config(url_file, client_file, user_file):
+    if not os.path.isfile(url_file):
+        print("No settings found.")
+        base_url = input("Instance URL: ")
+        user = input("E-Mail: ")
+        password = getpass.getpass("Password: ")
+        
+        Mastodon.create_app(
+            'tootmage alpha',
+            api_base_url = base_url,
+            to_file = client_file
+        )
+
+        mastodon = Mastodon(
+            client_id = client_file,
+            api_base_url = base_url
+        )
+        
+        mastodon.log_in(
+            user,
+            password,
+            to_file = user_file
+        )
+        
+        try:
+            if mastodon.account_verify_credentials() != None:
+                with open(url_file, "w") as f:
+                    f.write(base_url)
+            else:
+                print("Whoops, that went wrong - try again.")
+                sys.exit(0)
+        except:
+            print("Whoops, that went wrong - try again.")
+            sys.exit(0)
+            
 # ANSI escape and other output convenience functions
 def ansi_rgb(r, g, b):
     r = int(round(r * 255.0))
@@ -143,11 +179,6 @@ def get_avatar(avatar_url):
             avatar = ansi_rgb(0, 0, 0) + (glyphs["avatar"] * 4) # TODO use handle hash avatar instead
         avatar_cache[avatar_url] = avatar
         return avatar
-
-# Set the terminal to cbreak mode because 1) input is prompt-toolkit only anyways 2) less UI murdering
-term_attrs = termios.tcgetattr(sys.stdin.fileno())
-atexit.register(lambda: termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, term_attrs))
-tty.setcbreak(sys.stdin.fileno())
 
 prompt_app = None
 prompt_cli = None
@@ -1055,6 +1086,12 @@ def run_app():
         
         eval_command_thread(orig_command, command, buffers[-1], expand_using = expand_using)
 
+# Read settings
 exec(open("./settings.py").read())
+
+# Set the terminal to cbreak mode because 1) input is prompt-toolkit only anyways 2) less UI murdering
+term_attrs = termios.tcgetattr(sys.stdin.fileno())
+atexit.register(lambda: termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, term_attrs))
+tty.setcbreak(sys.stdin.fileno())
 
 run_app()

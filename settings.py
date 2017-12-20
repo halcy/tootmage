@@ -6,8 +6,11 @@ exec(open("./themes/datawitch.py").read())
 #exec(open("./themes/helvetica_standard.py").read())
 
 # Create mastodon object
-MASTODON_BASE_URL = "https://icosahedron.website"
-m = Mastodon(client_id = 'halcy_client.secret', access_token = 'halcy_user.secret', api_base_url = MASTODON_BASE_URL)
+ensure_app_config("tootmage_url.secret", "tootmage_client.secret", "tootmage_user.secret")
+MASTODON_BASE_URL = ""
+with open("tootmage_url.secret", "r") as f:
+    MASTODON_BASE_URL = f.read()
+m = Mastodon(client_id = 'tootmage_client.secret', access_token = 'tootmage_user.secret', api_base_url = MASTODON_BASE_URL)
 m._acct = m.account_verify_credentials()["acct"]
 
 # Columns
