@@ -40,3 +40,7 @@ things that are bad still and/or known bugs
 * everything is a bit user-unfriendly
 * documentation is bad
 * resizing temporarily breaks screen
+
+screenshots:
+![datawitch](https://raw.githubusercontent.com/halcy/tootmage/master/datawitch.png)
+![helvetica standard](https://raw.githubusercontent.com/halcy/tootmage/master/helvetica_standard.png)
