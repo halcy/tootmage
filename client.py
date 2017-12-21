@@ -1056,7 +1056,7 @@ def run_app():
                     
                 if command_parts[0] == "status_view":
                     if len(command_parts) <= 2:
-                        url_str = command_parts[1] + ".reblog.url if 'reblog' in " + command_parts[1] + " else (" + \
+                        url_str = command_parts[1] + ".reblog.url if ('reblog' in " + command_parts[1] + " and " + command_parts[1] + ".reblog != None) else (" + \
                             command_parts[1] + ".status.url if 'status' in " + command_parts[1] + " else " + \
                             command_parts[1] + ".url)"
                     else:
