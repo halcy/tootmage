@@ -38,5 +38,9 @@ glyphs = {
     'private': 'PRI', 
     'direct': 'DIR', 
     'line': "=",
-    'avatar': ""
+    'avatar': "",
+    'image': '[IMG]'
+    'video': '[VID]',
+    'audio': '[AUD]',
+    'gifv': '[GIF]',
 }

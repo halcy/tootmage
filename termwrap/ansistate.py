@@ -1,4 +1,7 @@
 
+# From the original ansiwrap repo:
+# https://github.com/jonathaneunice/ansiwrap/blob/master/ansiwrap/ansistate.py
+
 import sys
 
 _PY2 = sys.version_info[0] == 2

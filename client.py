@@ -1,68 +1,81 @@
-import sys
-sys.path = ["."] + sys.path
-
+# Mastodon.py imports
 from mastodon import Mastodon, StreamListener
 
+# Base python imports
 import re
 import time
 import datetime
 import html
 import pprint
 import shutil
-import termwrap
-import prompt_toolkit
-import prompt_toolkit.contrib
-import prompt_toolkit.contrib.completers
 import threading
 import colorsys
 import os
-import tty
-import termios
-import atexit
 import requests
-from PIL import Image
 import io
-import numpy as np
 import math
-import subprocess
-import copy
 import warnings
-import getpass
 
+from PIL import Image
+import numpy as np
+
+# prompt_toolkit imports
+from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import get_app
+from prompt_toolkit.layout import Layout, Window, Dimension
+from prompt_toolkit.layout.controls import BufferControl
+from prompt_toolkit.layout.processors import Transformation, Processor, ConditionalProcessor, HighlightSearchProcessor, HighlightSelectionProcessor, AppendAutoSuggestion, DisplayMultipleCursors
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+from prompt_toolkit.key_binding.defaults import load_key_bindings
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.enums import DEFAULT_BUFFER, SEARCH_BUFFER
+from prompt_toolkit.completion import WordCompleter, Completer, CompleteEvent
+from prompt_toolkit.filters import has_focus, is_done
+from prompt_toolkit.eventloop.inputhook import set_eventloop_with_inputhook
+from prompt_toolkit.document import Document
+from prompt_toolkit.cursor_shapes import CursorShape
+
+# Local imports
+import sys
+sys.path = ["."] + sys.path
+import termwrap.unserwrap as unserwrap
+
+# Globals
 quitting = False
+watched = []
+watched_streams = []
+title_offset = 0
+title_dirty = True
+last_rows = 0
+last_cols = 0
+last = None
+cli_tokens = []
 
-# Patch prompt-toolkit a bit
-prompt_toolkit.keys.Keys.ControlPageUp = prompt_toolkit.keys.Key("<C-PageUp>")
-prompt_toolkit.keys.Keys.ControlPageDown = prompt_toolkit.keys.Key("<C-PageDown>")
-prompt_toolkit.terminal.vt100_input.ANSI_SEQUENCES['\x1b[5;5~'] = prompt_toolkit.keys.Keys.ControlPageUp
-prompt_toolkit.terminal.vt100_input.ANSI_SEQUENCES['\x1b[6;5~'] = prompt_toolkit.keys.Keys.ControlPageDown
-
+# Helper function: make sure app config is set up
 def ensure_app_config(url_file, client_file, user_file):
     if not os.path.isfile(url_file):
         print("No settings found.")
         base_url = input("Instance URL: ")
-        user = input("E-Mail: ")
-        password = getpass.getpass("Password: ")
-        
-        Mastodon.create_app(
-            'tootmage alpha',
-            api_base_url = base_url,
-            to_file = client_file
+
+        if not os.path.isfile(client_file):
+            Mastodon.create_app(
+                'tootmage alpha',
+                api_base_url = base_url,
+                to_file = client_file
+            )
+        auth_app = Mastodon(client_id=client_file, api_base_url=base_url)
+
+        print(auth_app.auth_request_url())
+
+        # open the URL in the browser and paste the code you get
+        auth_app.log_in(
+            code=input("Enter the OAuth authorization code: "),
+            to_file=user_file
         )
 
-        mastodon = Mastodon(
-            client_id = client_file,
-            api_base_url = base_url
-        )
-        
-        mastodon.log_in(
-            user,
-            password,
-            to_file = user_file
-        )
-        
         try:
-            if mastodon.account_verify_credentials() != None:
+            if auth_app.account_verify_credentials() is not None:
                 with open(url_file, "w") as f:
                     f.write(base_url)
             else:
@@ -71,7 +84,7 @@ def ensure_app_config(url_file, client_file, user_file):
         except:
             print("Whoops, that went wrong - try again.")
             sys.exit(0)
-            
+
 # ANSI escape and other output convenience functions
 def ansi_rgb(r, g, b):
     r = int(round(r * 255.0))
@@ -111,7 +124,7 @@ def clear_screen():
 
 def draw_line(style, line_len):
     sys.stdout.write(style + (glyphs["line"] * line_len))
-    
+
 # Avatar tools
 avatar_cache = {}
 def get_avatar_cols(avatar_url):
@@ -149,18 +162,18 @@ def get_avatar_cols(avatar_url):
                     worst_difference = 100.0
                     if len(primary_cols) > 0:
                         for col in primary_cols:
-                            worst_difference = min(np.linalg.norm(
-                                col - np.array(colorsys.hsv_to_rgb(*test_col / 255.0)) 
-                            ), worst_difference)
+                            worst_difference = min(
+                                np.linalg.norm(col - np.array(colorsys.hsv_to_rgb(*test_col / 255.0))),
+                                worst_difference
+                            )
                     else:
                         worst_difference = 100.0
-                        
                     if worst_difference > 0.2:
                         found_col = True
                         primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*(test_col / 255.0)))))
-                        break                    
+                        break
                 if not found_col:
-                    median_col = np.median(hue, axis = 0)
+                    median_col = np.median(hue, axis=0)
                     primary_cols.append(list(np.array(colorsys.hsv_to_rgb(*(median_col / 255.0)))))
             except:
                 primary_cols.append(primary_cols[0])
@@ -176,17 +189,13 @@ def get_avatar(avatar_url):
             for col in avatar_cols:
                 avatar = avatar + ansi_rgb(*col) + glyphs["avatar"]
         except:
-            avatar = ansi_rgb(0, 0, 0) + (glyphs["avatar"] * 4) # TODO use handle hash avatar instead
+            avatar = ansi_rgb(0, 0, 0) + (glyphs["avatar"] * 4)  # fallback
         avatar_cache[avatar_url] = avatar
         return avatar
 
-prompt_app = None
-prompt_cli = None
-history = None
-
 # Mastodon API dict pretty printers
 def clean_text(text, style_names, style_text):
-    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', '\g<1>', text)    
+    content_clean = re.sub(r'<a [^>]*href="([^"]+)">[^<]*</a>', r'\1', text)
     content_clean = content_clean.replace('<span class="h-card">', style_names)
     content_clean = content_clean.replace('</span><span class="ellipsis">', "")
     content_clean = content_clean.replace('</span><span class="invisible">', "")
@@ -195,73 +204,147 @@ def clean_text(text, style_names, style_text):
     content_clean = content_clean.replace("</p>", "\n")
     content_clean = re.sub(r"<br[^>]*>", "\n", content_clean)
     content_clean = html.unescape(str(re.compile(r'<.*?>').sub("", content_clean).strip()))
-    
+
     content_split = []
     for line in content_clean.split("\n"):
         content_split.append(style_text + line)
     return "\n".join(content_split)
 
-def number_urls(text, style_url_nums, style_text): # TODO: Does not find media without URLs (oof)
-    urls = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+def number_urls(text, status, style_url_nums, style_text):
+    urls = re.findall(
+        r'http[s]?://(?:[a-zA-Z0-9$-_@.&+!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+        text
+    )
     url_num = 0
     replaced_urls = []
+
+    # URLs in text
     for url in urls:
-        if not url in replaced_urls:
+        if url not in replaced_urls:
             text = text.replace(url, style_url_nums + "(" + str(url_num) + ")" + style_text + " " + url)
             replaced_urls.append(url)
             url_num += 1
+
+    # Attachments
+    if not status is None:
+        for attachment in status["media_attachments"]:
+            if attachment["type"] in ["image", "video", "gifv", "audio"]:
+                text = text + " " + style_url_nums + "(" + str(url_num) + ")" + style_text + " " + glyphs[attachment["type"]]
+                url_num += 1
     return text, replaced_urls
 
-def pprint_status(result_prefix, result, scrollback, cw = False):
+
+def image_to_ansi_blocky(image, width=80):
+    image = image.convert("RGB")
+
+    # Resize
+    orig_w, orig_h = image.size
+    aspect_ratio = orig_h / orig_w
+    new_height = int(math.ceil(width * aspect_ratio))
+    new_height = max(new_height, 1)
+    resized = image.resize((width, new_height), Image.LANCZOS)
+
+    # Build ANSI output
+    lines = []
+    for y in range(0, new_height, 2):
+        row_chars = []
+        y_next = y + 1
+        for x in range(width):
+            r_top, g_top, b_top = resized.getpixel((x, y))
+            if y_next < new_height:
+                r_bot, g_bot, b_bot = resized.getpixel((x, y_next))
+            else:
+                r_bot, g_bot, b_bot = (0, 0, 0)
+            row_chars.append(
+                f"\033[38;2;{r_top};{g_top};{b_top}m"
+                f"\033[48;2;{r_bot};{g_bot};{b_bot}m▀"
+            )
+        row_chars.append("\033[0m")
+        lines.append("".join(row_chars))
+    return lines
+
+def pprint_status(result_prefix, result, scrollback, cw=False, images=False):
     content_clean = ""
-    if result.spoiler_text != None and len(result.spoiler_text) > 0:
+    if result.spoiler_text is not None and len(result.spoiler_text) > 0:
         content_clean = theme["cw"] + "[CW: " + result.spoiler_text + "] "
-    if not cw or result.spoiler_text == None or len(result.spoiler_text) == 0:
+    if not cw or result.spoiler_text is None or len(result.spoiler_text) == 0:
         content_clean += clean_text(result["content"], theme["names_inline"], theme["text"])
-    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text"])
-    
+    content_clean, result["__urls"] = number_urls(content_clean, result, theme["url_nums"], theme["text"])
+
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
     status_icon = glyphs[result["visibility"]]
-    
+
     avatar = get_avatar(result["account"]["avatar_static"])
 
-    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted, theme["visibility"] + status_icon) 
+    scrollback.print(
+        theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]
+        + theme["dates"] + " @ " + time_formatted,
+        theme["visibility"] + status_icon
+    )
     scrollback.print(avatar + " " + content_clean + " ")
+
+    if images:
+        if "media_attachments" in result:
+            for attachment in result["media_attachments"]:
+                if attachment["type"] == "image":
+                    try:
+                        image_url = attachment["url"]
+                        image_resp = requests.get(image_url)
+                        image = Image.open(io.BytesIO(image_resp.content))
+                        scrollback.print(image)
+                    except:
+                        scrollback.print("Error loading image\n")
+
     scrollback.print("")
     return
 
-def pprint_reblog(result_prefix, result, scrollback, cw = False):
+def pprint_reblog(result_prefix, result, scrollback, cw=False, images=False):
     content_clean = ""
-    if result.spoiler_text != None and len(result.spoiler_text) > 0:
-        content_clean = theme["cw"] + "[CW: " + result.spoiler_text + "] "
-    if not cw or result.spoiler_text == None or len(result.spoiler_text) == 0:
-        content_clean += clean_text(result["content"], theme["names_inline"], theme["text"])
-    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text"])
-    
+    if result.reblog.spoiler_text is not None and len(result.reblog.spoiler_text) > 0:
+        content_clean = theme["cw"] + "[CW: " + result.reblog.spoiler_text + "] "
+    if not cw or result.reblog.spoiler_text is None or len(result.reblog.spoiler_text) == 0:
+        content_clean += clean_text(result.reblog["content"], theme["names_inline"], theme["text"])
+    content_clean, result["__urls"] = number_urls(content_clean, result.reblog, theme["url_nums"], theme["text"])
+
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
     avatar_orig = get_avatar(result["reblog"]["account"]["avatar_static"])
-    
-    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
-    scrollback.print(avatar + " " + theme["reblog"] + glyphs["reblog"] + " " + avatar_orig + " " + theme["names"] + result["reblog"]["account"]["acct"])  
+
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]
+                     + theme["dates"] + " @ " + time_formatted)
+    scrollback.print(avatar + " " + theme["reblog"] + glyphs["reblog"] + " " + avatar_orig
+                     + " " + theme["names"] + result["reblog"]["account"]["acct"])
     scrollback.print(content_clean)
+    if images:
+        if "media_attachments" in result.reblog:
+            for attachment in result.reblog["media_attachments"]:
+                if attachment["type"] == "image":
+                    try:
+                        image_url = attachment["url"]
+                        image_resp = requests.get(image_url)
+                        image = Image.open(io.BytesIO(image_resp.content))
+                        scrollback.print(image)
+                    except:
+                        scrollback.print("Error loading image\n")
+
     scrollback.print("")
     return
 
-def pprint_notif(result_prefix, result, scrollback, cw = False):
+def pprint_notif(result_prefix, result, scrollback, cw=False):
     content_clean = ""
-    if result.status.spoiler_text != None and len(result.status.spoiler_text) > 0:
+    if result.status.spoiler_text is not None and len(result.status.spoiler_text) > 0:
         content_clean = theme["cw_notif"] + "[CW: " + result.status.spoiler_text + "] "
-    if not cw or result.status.spoiler_text == None or len(result.status.spoiler_text) == 0:
+    if not cw or result.status.spoiler_text is None or len(result.status.spoiler_text) == 0:
         content_clean += clean_text(result["status"]["content"], theme["names_notif"], theme["text_notif"])
-    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text_notif"])
-    
+    content_clean, result["__urls"] = number_urls(content_clean, None, theme["url_nums"], theme["text_notif"])
+
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S')
 
     avatar = get_avatar(result["account"]["avatar_static"])
 
-    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["account"]["acct"]
+                     + theme["dates"] + " @ " + time_formatted)
     scrollback.print(avatar + " " + theme[result["type"]] + glyphs[result["type"]] + " " + content_clean)
     scrollback.print("")
     return
@@ -271,87 +354,95 @@ def pprint_follow(result_prefix, result, scrollback):
 
     avatar = get_avatar(result["account"]["avatar_static"])
 
-    scrollback.print(theme["ids"] + result_prefix + " " + avatar + " " + theme["follow"] + glyphs["follow"] + " " + theme["names"] + result["account"]["acct"]  + theme["dates"] + " @ " + time_formatted)
+    scrollback.print(
+        theme["ids"] + result_prefix + " " + avatar + " " + theme["follow"]
+        + glyphs["follow"] + " " + theme["names"] + result["account"]["acct"]
+        + theme["dates"] + " @ " + time_formatted
+    )
     scrollback.print("")
     return
 
-def pprint_account(result_prefix, result, scrollback, cw = False):
+def pprint_account(result_prefix, result, scrollback, cw=False):
     content_clean = clean_text(result["note"], theme["names_inline"], theme["text"])
-    content_clean, result["__urls"] = number_urls(content_clean, theme["url_nums"], theme["text"])
-    
+    content_clean, result["__urls"] = number_urls(content_clean, None, theme["url_nums"], theme["text"])
+
     time_formatted = datetime.datetime.strftime(result["created_at"], '%H:%M:%S %d %b %Y')
     avatar = get_avatar(result["avatar_static"])
 
-    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["acct"] + " | " + result["display_name"] + " " + avatar)
+    scrollback.print(theme["ids"] + result_prefix + theme["names"] + result["acct"] + " | "
+                     + result["display_name"] + " " + avatar)
     scrollback.print(content_clean)
     scrollback.print(theme["text"] + "* Known since " + theme["dates"] + time_formatted)
-    scrollback.print(theme["text"] + "* Loc. statuses: " + theme["names_inline"] + str(result["statuses_count"]) + \
-        theme["text"] + ", Loc. followers: " + theme["names_inline"] + str(result["followers_count"]) + \
-        theme["text"] + ". Loc. following: " + theme["names_inline"] + str(result["following_count"])
+    scrollback.print(
+        theme["text"] + "* Loc. statuses: " + theme["names_inline"] + str(result["statuses_count"])
+        + theme["text"] + ", Loc. followers: " + theme["names_inline"] + str(result["followers_count"])
+        + theme["text"] + ". Loc. following: " + theme["names_inline"] + str(result["following_count"])
     )
-    scrollback.print("")    
+    scrollback.print("")
     return
 
-def pprint_result(result, scrollback, result_prefix = "", not_pretty = False, cw = False, expand_using = None):
+def pprint_result(result, scrollback, result_prefix="", not_pretty=False, cw=False, expand_using=None, expand_unknown=False, images=False):
     retval = None
-    if expand_using != None:
+    if expand_using is not None:
         to_expand = result
-        if not "content" in to_expand:
+        if "content" not in to_expand:
             to_expand = to_expand.status
         context = expand_using.status_context(to_expand)
         result = list(reversed(context.ancestors + [to_expand] + context.descendants))
         retval = result
-        
+
     if isinstance(result, list):
         for num, sub_result in enumerate(reversed(result)):
             sub_result_prefix = str(len(result) - num - 1)
-            pprint_result(sub_result, scrollback, sub_result_prefix, not_pretty, cw = cw)
+            pprint_result(sub_result, scrollback, sub_result_prefix, not_pretty, cw=cw, expand_unknown=expand_unknown, images=images)
         return retval
-        
+
     if result_prefix != "":
         result_prefix = "#" + result_prefix.ljust(4)
-        
+
     if isinstance(result, dict):
         if "content" in result:
-            if "reblog" in result and result["reblog"] != None:
-                pprint_reblog(result_prefix, result, scrollback, cw = cw)
+            if "reblog" in result and result["reblog"] is not None:
+                pprint_reblog(result_prefix, result, scrollback, cw=cw, images=images)
             else:
-                pprint_status(result_prefix, result, scrollback, cw = cw)
+                pprint_status(result_prefix, result, scrollback, cw=cw, images=images)
             return
-        
+
         if "type" in result:
             if result["type"] == "mention":
-                pprint_status(result_prefix, result["status"], scrollback, cw = cw)
+                pprint_status(result_prefix, result["status"], scrollback, cw=cw)
                 return
-            
+
             if result["type"] in ["reblog", "favourite"]:
-                pprint_notif(result_prefix, result, scrollback, cw = cw)
+                pprint_notif(result_prefix, result, scrollback, cw=cw)
                 return
-            
+
             if result["type"] == "follow":
                 pprint_follow(result_prefix, result, scrollback)
                 return
-        
+
         if "acct" in result:
             pprint_account(result_prefix, result, scrollback)
             return
-        
-    scrollback.print(theme["text"] + pprint.pformat(result))
 
-# Combines two strings, trying to align one left and the other right,
-# while wrapping
+    if expand_unknown:
+        scrollback.print(theme["text"] + pprint.pformat(result))
+    else:
+        scrollback.print(theme["text"] + "(Unknown object)")
+
+# Helper: combines two strings, aligning one left and one right, and does wrapping
 def align(left_part, right_part, width):
-    max_spaces = max(width - (termwrap.ansilen_unicode(left_part) + termwrap.ansilen_unicode(right_part) - 1), 0)
+    max_spaces = max(width - (unserwrap.ansilen_unicode(left_part) + unserwrap.ansilen_unicode(right_part) - 1), 0)
     for i in reversed(range(max_spaces)):
         aligned = left_part + (" " * i) + right_part
-        result = termwrap.wrap_proper(aligned, width)
+        result = unserwrap.wrap(aligned, width)
         if len(result) == 1:
             return result
-    return termwrap.wrap_proper(left_part + " " + right_part, width)
+    return unserwrap.wrap(left_part + " " + right_part, width)
 
 # Scrollback column with internal "result history" buffer
 class Scrollback:
-    def __init__(self, title, offset, width):
+    def __init__(self, title, offset, width, expand_unknown=False):
         self.scrollback = []
         self.dirty = True
         self.pos = 0
@@ -364,59 +455,53 @@ class Scrollback:
         self.result_counter = -1
         self.full_redraw = True
         self.wrapped_cache = []
-    
-    # Do I need any redrawing?
+        self.expand_unknown = expand_unknown
+
     def needs_redraw(self):
         return self.full_redraw or self.dirty
-    
-    # Set buffer active or no
+
     def set_active(self, active):
         self.active = active
         self.full_redraw = True
-        
-    # Append to result history and print
+
     def add_result(self, result):
         self.result_counter = (self.result_counter + 1) % 1000
         if len(self.result_history) > self.result_counter:
             self.result_history[self.result_counter] = result
         else:
             self.result_history.append(result)
-        pprint_result(result, self, str(self.result_counter), cw = True)
-        
-    # Print to scrollback
-    def print(self, x, right_side = None):
-        new_lines = x.split("\n")
-        right_side_lines = [right_side] * len(new_lines)
-        self.scrollback.extend(zip(new_lines, right_side_lines))
+        pprint_result(result, self, str(self.result_counter), cw=True, expand_unknown = self.expand_unknown)
+
+    def print(self, x, right_side=None):
+        if isinstance(x, Image.Image):
+            self.scrollback.append((x, None))
+        elif isinstance(x, str):
+            new_lines = x.split("\n")
+            right_side_lines = [right_side] * len(new_lines)
+            self.scrollback.extend(zip(new_lines, right_side_lines))
         if len(self.scrollback) > 3000:
             self.scrollback = self.scrollback[len(self.scrollback)-3000:]
             self.wrapped_cache = self.wrapped_cache[len(new_lines):]
         self.dirty = True
         self.added = True
 
-    # Scroll up/down
     def scroll(self, how_far):
         self.pos = self.pos + how_far
         self.dirty = True
-      
-    # Draw column
+
     def draw(self, print_height, max_width):
-        # Figure out width
         print_width = min(self.width, max_width - self.offset + 1)
         if print_width < 0:
             return
-        
+
         if self.full_redraw:
-            # Invalidate the wrapping cache
             self.wrapped_cache = []
-            
-            # Move to start and draw header
             cursor_to(self.offset + 1, 1)
             if self.active:
                 sys.stdout.write(theme["active"] + self.title + " #")
             else:
                 sys.stdout.write(theme["titles"] + self.title + "  ")
-                                
+
             cursor_to(self.offset, 2)
             line_style = theme["lines"]
             if self.active:
@@ -424,113 +509,93 @@ class Scrollback:
             draw_line(line_style, print_width)
             self.full_redraw = False
             self.dirty = True
-            
-        # Do we need to update the actual scrollback area?
+
         if self.dirty == False:
             return
         self.dirty = False
-        
-        # If so, figure out contents
+
         text_width = max(print_width - 2, 0)
         if text_width == 0:
             return
-        
+
         wrapped_lines = []
         for counter, (line, right_side) in enumerate(self.scrollback):
             if counter >= len(self.wrapped_cache):
-                new_lines = []
-                if right_side != None:
-                    new_lines = align(line, right_side, text_width)
-                else:
-                    new_lines = termwrap.wrap_proper(line, text_width)
-                if len(new_lines) == 0:
-                    new_lines = [""]
+                if isinstance(line, str):
+                    if right_side is not None:
+                        new_lines = align(line, right_side, text_width)
+                    else:
+                        new_lines = unserwrap.wrap(line, text_width)
+                    if len(new_lines) == 0:
+                        new_lines = [""]
+                elif isinstance(line, Image.Image):
+                    new_lines = image_to_ansi_blocky(line, text_width) + [""]
                 wrapped_lines.extend(new_lines)
                 self.wrapped_cache.append(new_lines)
             else:
                 wrapped_lines.extend(self.wrapped_cache[counter])
-            
-        # Update scrollbacavatar_imagek position, in case it needs updating
+
         self.pos = max(self.pos, print_height)
         self.pos = min(self.pos, len(wrapped_lines))
-        
+
         if self.added:
             self.pos = len(wrapped_lines)
         self.added = False
-        
-        # Figure out which parts to draw
+
         print_end = min(self.pos, len(wrapped_lines))
         print_start = max(print_end - print_height, 0)
         print_lines = wrapped_lines[print_start:print_end]
-        
-        # Draw scrollback area
+
         for line_pos, line in enumerate(print_lines):
             cursor_to(self.offset, line_pos + 3)
             clear_line(print_width + 1)
-            cursor_to(self.offset + 1, line_pos + 3)            
+            cursor_to(self.offset + 1, line_pos + 3)
             sys.stdout.write(line)
 
-watched = [
-]
-
-watched_streams = [
-]
 
 # Return app title, possibly animated
-title_offset = 0
-title_dirty = True
 def get_title():
     title_str = ""
     for index, character in enumerate("tootmage"):
         r, g, b = colorsys.hsv_to_rgb((index * 1.5 + title_offset) / 30.0, 0.8, 1.0)
-        title_str = title_str + ansi_rgb(r, g, b) + character
+        title_str += ansi_rgb(r, g, b) + character
     return title_str
-    
-# Update application (other than prompt line, that's prompt-toolkits job)
-last_rows = 0
-last_cols = 0
+
 def screen_update_once():
+    global title_dirty    
     global last_rows
     global last_cols
-    global title_dirty
-    
-    # Grab size of screen
-    cols, rows = shutil.get_terminal_size()
-    
-    # Do we need a full redisplay? Initiate that, if so.
-    if rows != last_rows or cols != last_cols:
-        sys.stdout.write(ansi_clear())
-        draw_prompt_separator()
-        for scrollback in buffers:
-            scrollback.full_redraw = True
-        last_rows = rows
-        last_cols = cols
-    
-    # Check if we have anything to draw
+
     need_redraw = False
-    for scrollback in buffers:
-        if scrollback.needs_redraw():
+    for sc in buffers:
+        if sc.needs_redraw():
             need_redraw = True
+
     if title_dirty:
         need_redraw = True
         title_dirty = False
-        
-    if need_redraw:
-        # Store cursor and print header
-        cursor_save()
-        
-        # Draw title
-        cursor_to(cols - len("tootmage") + 1, 0)
-        sys.stdout.write(get_title() + "")
-        
-        # Draw buffers
-        print_height = rows - 4
-        for scrollback in buffers:
-            scrollback.draw(print_height, cols)
-        
-        cursor_restore()
 
-# Draw the little line above the prompt
+    cols, rows = shutil.get_terminal_size()
+    if rows != last_rows or cols != last_cols:
+        sys.stdout.write(ansi_clear())
+        for sc in buffers:
+            sc.full_redraw = True
+        last_rows = rows
+        last_cols = cols
+        need_redraw = True
+
+    if not need_redraw:
+        return
+
+    cursor_save()
+    cursor_to(cols - len("tootmage") + 1, 0)
+    sys.stdout.write(get_title() + "")
+    print_height = rows - 4
+    for sc in buffers:
+        sc.draw(print_height, cols)
+    draw_prompt_separator()
+    cursor_restore()
+
 def draw_prompt_separator():
     cols, rows = shutil.get_terminal_size()
     cursor_to(0, rows - 1)
@@ -539,286 +604,205 @@ def draw_prompt_separator():
 def move_cursor(new, xoff):
     cursor_to(new.x + xoff, new.y)
 
-# Token saver
-cli_tokens = None
-class StoreTokens(prompt_toolkit.layout.processors.Processor):
-    def apply_transformation(self, cli, document, lineno, source_to_display, tokens):
+# Token capturing processor for v3
+class StoreTokens(Processor):
+    def apply_transformation(self, transformation_input):
         global cli_tokens
-        cli_tokens = tokens
-        return prompt_toolkit.layout.processors.Transformation(tokens)
-    
+        cli_tokens = transformation_input.fragments
+        return Transformation(transformation_input.fragments)
+
 def app_update(context):
+    """
+    This function is used as an inputhook in the event loop.
+    It is called repeatedly while prompt_toolkit is idle,
+    so we can do background UI updates, watchers, etc.
+    """
     if quitting:
         return
-    
+
     global title_offset
     global title_dirty
     global watched
-    while not context.input_is_ready():
-        thread_names = map(lambda x: x.name, threading.enumerate())
+
+    # We do a small idle loop: poll watchers, streams, etc.
+    while True:
+        # If there's typed input waiting, break so prompt_toolkit can proceed.
+        if context.input_is_ready():
+            break
+
+        # Animate the title if there's a command runner thread
+        thread_names = [t.name for t in threading.enumerate()]
         if "command_runner" in thread_names:
             title_offset += 2.0
             title_dirty = True
-            
+
+        # Run watchers
         for watched_expr in watched:
             funct, last_exec, exec_every, scrollback = watched_expr
             if time.time() - last_exec > exec_every:
                 watched_expr[1] = time.time()
-                eval_command_thread("", funct, scrollback, interactive = False)
-        
-        for watched_handle_idx in range(len(watched_streams)):
-            if not watched_streams[watched_handle_idx][0].is_alive():
+                eval_command_thread("", funct, scrollback, interactive=False)
+
+        # Check watchers for streams
+        for i in range(len(watched_streams)):
+            if not watched_streams[i][0].is_alive():
                 try:
-                    watched_streams[watched_handle_idx][0].close()
+                    watched_streams[i][0].close()
                 except:
                     pass
-                watched_streams[watched_handle_idx] = (
-                    watched_streams[watched_handle_idx][1](watched_streams[watched_handle_idx][2], async = True),
-                    watched_streams[watched_handle_idx][1],
-                    watched_streams[watched_handle_idx][2]
-                )
-                
+                handle, function, collector = watched_streams[i]
+                new_stream = function(collector, run_async=True)
+                watched_streams[i] = (new_stream, function, collector)
+
         # Redraw main UI
         screen_update_once()
-        
-        # Redraw CLI
-        if prompt_cli != None:
-            # Don't want the CLI to actually draw anything
-    
-            # Run through the render routines so we have the tokens
-            prompt_cli.renderer.reset()
-            prompt_cli.renderer.render(prompt_cli, prompt_cli.layout)
-            
-            # Draw the tokens, manually
-            cols, rows = shutil.get_terminal_size()
-            
-            cursor_to(0, rows)
-            clear_line()
-            
-            cursor_to(0, rows)
-            sys.stdout.write(theme["prompt"] + ">>> ")
-            for token in cli_tokens:
-                token_type = token[0]
-                
-                # Some very basic styling
-                if len(token_type) > 1:
-                    token_type = "Token." + ".".join(token_type[1:])                    
-                token_type = str(token_type)
-                    
-                if not token_type in theme["prompt_toolkit_tokens"]:
-                    token_type = "Default"                
-                sys.stdout.write(theme["prompt_toolkit_tokens"][token_type] + token[1])
-            
-            # Prompt separator
-            draw_prompt_separator()
-            
-            # Set cursor position
-            cursor_to(prompt_cli.current_buffer.cursor_position + 5, rows) # TODO i-search has a broken cursor
-        sys.stdout.flush()
-        
-        # No updating the UI outside of this function
-        #sys.stdout.write = no_op_2
-        
-        time.sleep(0.02)
 
-# Don't want to use prompt_toolkits layouting, lets make it so we can draw
-# all the tokens ourselves!
-def create_bottom_repl_application(
-        completer = None, 
-        history = None,
-        key_bindings_registry = None,
-        on_abort = prompt_toolkit.interface.AbortAction.RETRY,
-        on_exit = prompt_toolkit.interface.AbortAction.RAISE_EXCEPTION,
-        accept_action = prompt_toolkit.interface.AcceptAction.RETURN_DOCUMENT):
+        # Manually draw the CLI content
+        cols, rows = (last_cols, last_rows)
+        cursor_to(0, rows)
+        sys.stdout.write(theme["prompt"] + ">>> ")
 
-    # Create list of input processors that we need
-    input_processors = [
-        prompt_toolkit.layout.processors.ConditionalProcessor(
-            prompt_toolkit.layout.processors.HighlightSearchProcessor(preview_search = True),
-            prompt_toolkit.filters.HasFocus(prompt_toolkit.enums.SEARCH_BUFFER)
-        ),
-        prompt_toolkit.layout.processors.HighlightSelectionProcessor(),
-        prompt_toolkit.layout.processors.ConditionalProcessor(
-            prompt_toolkit.layout.processors.AppendAutoSuggestion(), 
-            prompt_toolkit.filters.HasFocus(prompt_toolkit.enums.DEFAULT_BUFFER) & ~prompt_toolkit.filters.IsDone()
-        ),
-        prompt_toolkit.layout.prompt.DefaultPrompt(lambda cli: []),
-        StoreTokens()
-    ]
-    
-    # Create layout (essentially a dummy - we draw tokens ourselves)
-    layout = prompt_toolkit.layout.Window(
-        prompt_toolkit.layout.BufferControl(
-            input_processors = input_processors,
-            preview_search = True
-        ),
-        get_height= lambda cli: prompt_toolkit.layout.dimension.LayoutDimension.exact(1),
-        wrap_lines = False,
-    )
-    
-    # Create application
-    return prompt_toolkit.Application(
-        layout = layout,
-        buffer = prompt_toolkit.buffer.Buffer(
-            history = history,
-            completer = completer,
-            accept_action = accept_action,
-            initial_document = prompt_toolkit.document.Document(''),
-        ),
-        key_bindings_registry = key_bindings_registry,
-        on_abort = on_abort,
-        on_exit = on_exit
-    )
+        # Render any “fragments” we captured:
+        for (style_str, text) in cli_tokens:
+            # look up a style or fallback
+            token_style = style_str if style_str in theme["prompt_toolkit_tokens"] else "Default"
+            if token_style not in theme["prompt_toolkit_tokens"]:
+                sys.stdout.write(theme["prompt"] + text)
+            else:
+                sys.stdout.write(theme["prompt_toolkit_tokens"][token_style] + text)
 
-# Print prompt and read a single line
-def read_line(history, key_registry):
-    global prompt_app
-    global prompt_cli
-    cols, rows = shutil.get_terminal_size()
-    cursor_to(0, rows)
-    completer = MastodonFuncCompleter(m)
-    prompt_app = create_bottom_repl_application(
-        history = history,
-        key_bindings_registry = key_registry,
-        completer = completer
-    )
-    eventloop = prompt_toolkit.shortcuts.create_eventloop(inputhook = app_update)
-    prompt_cli = prompt_toolkit.CommandLineInterface(application=prompt_app, eventloop=eventloop)
-    input_line = prompt_cli.run().text
-    for scrollback in buffers:
-        scrollback.full_redraw = True
-    return(input_line)
+        # Set cursor to correct position
+        cursor_to(get_app().layout.current_window.content.buffer.document.cursor_position_col + 5, rows)
+        sys.stdout.flush()        
 
-# Command evaluator thread
-last = None
-def eval_command(orig_command, command, scrollback, interactive = True, expand_using = None):
+        time.sleep(0.01)
+
+# Run a command and put the result in scrollback
+def eval_command(orig_command, command, scrollback, interactive=True, expand_using=None):
     global last
     global buffers
-    
     if interactive:
         scrollback.print("")
         scrollback.print(theme["text"] + "> " + orig_command)
     try:
         result_ns = {}
         print_result = None
-        
+
         if callable(command):
             print_result = command()
         else:
             command_code = compile(command, '<string>', 'exec')
             exec(command_code, globals(), result_ns)
-            
+
         if interactive:
             for var_name in result_ns.keys():
                 globals()[var_name] = result_ns[var_name]
-            
             if "__thread_res" in result_ns:
                 last = result_ns["__thread_res"]
                 print_result = last
         else:
             if "__thread_res" in result_ns:
                 print_result = result_ns["__thread_res"]
-                
-        if not isinstance(print_result, list) and expand_using == None:
+
+        if not isinstance(print_result, list) and expand_using is None:
             print_result = [print_result]
             last = [last]
-            
-        pprint_retval = pprint_result(print_result, scrollback, cw = not interactive, expand_using = expand_using)
-        if pprint_retval != None:
+
+        pprint_retval = pprint_result(print_result, scrollback, cw=not interactive, expand_using=expand_using, expand_unknown=True, images=True)
+        if pprint_retval is not None:
             last = pprint_retval
         buffers[-1].result_history = last
-        
+
     except Exception as e:
         scrollback.print(str(command) + " -> " + str(e))
 
-def eval_command_thread(orig_command, command, scrollback, interactive = True, expand_using = None):
+# Run a command, in a thread
+def eval_command_thread(orig_command, command, scrollback, interactive=True, expand_using=None):
     thread_name = "command_runner"
-    if interactive == False:
-        thread_name = thread_name + "_bg"
-        
-    exec_thread = threading.Thread(target = eval_command, daemon = True, name = thread_name, args = (orig_command, command, scrollback, interactive, expand_using))
+    if not interactive:
+        thread_name += "_bg"
+
+    def run():
+        eval_command(orig_command, command, scrollback, interactive, expand_using)
+
+    exec_thread = threading.Thread(target=run, daemon=True, name=thread_name)
     exec_thread.start()
 
-# Set up keybindings
-key_registry = prompt_toolkit.key_binding.defaults.load_key_bindings_for_prompt()
+# Set up keybinds for prompt toolkit
+key_bindings = KeyBindings()
 
-# Instant tab completion
-@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlI)
+@key_bindings.add("tab")
 def generate_completions(event):
-    b = event.current_buffer
-    if b.complete_state:
-        b.complete_next()
+    buff = event.app.current_buffer
+    if buff.complete_state:
+        buff.complete_next()
     else:
-        event.cli.start_completion(insert_common_part=True, select_first=True)
-        b.complete_next()
+        buff.start_completion(select_first=True)
+        buff.complete_next()
 
-# Accept, but without newline echo
-@key_registry.add_binding(prompt_toolkit.keys.Keys.Enter)
-def read_line_accept(args):
-    cursor_save()
-    cursor_to(0, 0)
-    prompt_cli._set_return_callable(lambda: prompt_app.buffer.document)
-    cursor_restore()
-    history.append(prompt_app.buffer.document.text)
-    tty.setcbreak(sys.stdin.fileno()) # Be paranoid about STAYING in cbreak mode
-    
-# Clear Ctrl-L (clear-screen)
-@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlL)
-def do_nothing(args):
-    pass
+@key_bindings.add("enter")
+def accept_line(event):
+    # Get text and clear buffer
+    text = event.app.current_buffer.text
+    event.app.current_buffer.reset()
 
-# Increase scrollback position
-@key_registry.add_binding(prompt_toolkit.keys.Keys.PageDown)
-def scroll_up(args, how_far = 2):
-    buffers[buffer_active].scroll(2)
-    
+    # store to history
+    global history
+    if history is not None:
+        history.append_string(text)
 
-# Reduce scrollback position
-@key_registry.add_binding(prompt_toolkit.keys.Keys.PageUp)
-def scroll_down(args, how_far = 2):
+    # Set the return value
+    event.app.exit(result=text)
+
+@key_bindings.add("c-l")
+def clear_screen_key(event):
+    sys.stdout.write(ansi_clear())
+    for sc in buffers:
+        sc.full_redraw = True
+
+@key_bindings.add("pageup")
+def page_up(event):
     buffers[buffer_active].scroll(-2)
 
-# Next buffer
-@key_registry.add_binding(prompt_toolkit.keys.Keys.Escape, prompt_toolkit.keys.Keys.Down)
-@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlPageDown)
-@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlRight)
-def next_buffer(args):
+@key_bindings.add("pagedown")
+def page_down(event):
+    buffers[buffer_active].scroll(2)
+
+@key_bindings.add("escape", "down")
+@key_bindings.add("c-right")
+def next_buffer_event(event):
     global buffer_active
     buffer_new = buffer_active + 1
     if buffer_new >= len(buffers):
-        buffer_new -= len(buffers)
-    buffers[buffer_active].set_active(False)
-    buffers[buffer_new].set_active(True)        
-    buffer_active = buffer_new
-
-# Previous buffer
-@key_registry.add_binding(prompt_toolkit.keys.Keys.Escape, prompt_toolkit.keys.Keys.Up)
-@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlPageUp)
-@key_registry.add_binding(prompt_toolkit.keys.Keys.ControlLeft)
-def next_buffer(args):
-    global buffer_active
-    buffer_new = buffer_active - 1
-    if buffer_new < 0:
-        buffer_new += len(buffers)
+        buffer_new = 0
     buffers[buffer_active].set_active(False)
     buffers[buffer_new].set_active(True)
     buffer_active = buffer_new
 
-# Function that adds a watcher
+@key_bindings.add("escape", "up")
+@key_bindings.add("c-left")
+def prev_buffer_event(event):
+    global buffer_active
+    buffer_new = buffer_active - 1
+    if buffer_new < 0:
+        buffer_new = len(buffers) - 1
+    buffers[buffer_active].set_active(False)
+    buffers[buffer_new].set_active(True)
+    buffer_active = buffer_new
+
 def watch(function, scrollback, every_s):
     watched.append([function, 0, every_s, scrollback])
 
-# Class that just calls a callback for stream events
 class EventCollector(StreamListener):
-    def __init__(self, event_handler = None, notification_event_handler = None):
+    def __init__(self, event_handler=None, notification_event_handler=None):
         super(EventCollector, self).__init__()
         self.event_handler = event_handler
         self.notification_event_handler = notification_event_handler
-        
+
     def on_update(self, status):
-        if self.event_handler != None:
+        if self.event_handler is not None:
             self.event_handler(status)
-            
+
     def on_notification(self, notification):
         # Pop up notification
         user = "@" + notification.account.acct
@@ -830,156 +814,234 @@ class EventCollector(StreamListener):
             user += " favourited:"
         if notification.type == "follow":
             user += " followed you."
-        
+
         text = ""
-        if  "status" in notification and notification.status != None:
+        if "status" in notification and notification.status is not None:
             text = clean_text(notification.status.content, "", "")
-        
+
         notify_command(user, text)
-        
-        # Run handler
-        if self.notification_event_handler != None:
+
+        if self.notification_event_handler is not None:
             self.notification_event_handler(notification)
-        
-# Watcher that watches a stream
-def watch_stream(function, scrollback = None, scrollback_notifications = None, initial_fill = None, initial_fill_notifications = None):
-    def watch_stream_internal(function, scrollback = None, scrollback_notifications = None, initial_fill = None, initial_fill_notifications = None):
+
+def watch_stream(function, scrollback=None, scrollback_notifications=None,
+                 initial_fill=None, initial_fill_notifications=None):
+    def watch_stream_internal():
         event_handler = None
-        if scrollback != None:
+        if scrollback is not None:
             event_handler = scrollback.add_result
-            if initial_fill != None:
+            if initial_fill is not None:
                 initial_data = initial_fill()
                 for result in reversed(initial_data):
                     event_handler(result)
-                
+
         notification_event_handler = None
-        if scrollback_notifications != None:
+        if scrollback_notifications is not None:
             notification_event_handler = scrollback_notifications.add_result
-            if initial_fill != None:
-                initial_data = initial_fill_notifications()
-                for result in reversed(initial_data):
+            if initial_fill_notifications is not None:
+                initial_data_notif = initial_fill_notifications()
+                for result in reversed(initial_data_notif):
                     notification_event_handler(result)
-                
-        result_collector = EventCollector(event_handler, notification_event_handler)
-        watched_streams.append((function(result_collector, async = True), function, result_collector))
-        
-    watch_start_thread = threading.Thread(target = watch_stream_internal, daemon = True, name = "start_watch", args = (function, scrollback, scrollback_notifications, initial_fill, initial_fill_notifications))
+
+        collector = EventCollector(event_handler, notification_event_handler)
+        handle = function(collector, run_async=True)
+        watched_streams.append((handle, function, collector))
+
+    watch_start_thread = threading.Thread(target=watch_stream_internal, daemon=True, name="start_watch")
     watch_start_thread.start()
 
-# Sorting... is complicated and phenomenological.
-def prefix_val(name):
-        val = 0
-        if not '_' in name:
-            val -= 100000
-        
-        if name.startswith('toot'):
-            val -= 11000
-        
-        if name.startswith('reply'):
-            val -= 15000
-        
-        if name.startswith('status'):
-            val -= 10000
-        
-        if name.startswith('account'):
-            val -= 9000
-        
-        if name.startswith('media'):
-            val -= 8000
-        
-        if name.startswith('timeline'):
-            val -= 7000
-        
-        if name.startswith('notifications'):
-            val -= 6000
-        
-        if name.startswith('follow'):
-            val -= 5000
-        
-        if name.startswith('domain'):
-            val -= 4000
-        
-        val = val + len(name)
-        return val
-
-def suffix_key(name):
-    if "_" in name:
-        return name[name.rfind("_") + 1:]
-    return name
-
-def overrride_key(name):
-    if name.endswith('reply'):
-        return 0
-    if name.endswith('boost'):
-        return 0
-    if name.endswith('expand'):
-        return 0
-    if name.endswith('toot'):
-        return 0
-    if name.endswith('view'):
-        return 0
-    if name.endswith('quit'):
-        return 0
-    return 1
-
-def combined_key(name):
-    return(overrride_key(name.text), suffix_key(name.text), prefix_val(name.text))
-
-def get_func_names():
-    funcs = dir(Mastodon)
-    funcs = list(filter(lambda x: not x.startswith("_"), funcs))
-    funcs = list(filter(lambda x: not x.endswith("_version"), funcs))    
-    funcs = list(filter(lambda x: not "stream_" in x, funcs))
-    funcs = list(filter(lambda x: not "fetch_" in x, funcs))
-    funcs = list(filter(lambda x: not "create_app" in x, funcs))
-    funcs = list(filter(lambda x: not "create_app" in x, funcs))
-    funcs = list(filter(lambda x: not "auth_request_url" in x, funcs))
-    funcs = ["quit", "status_reply", "status_expand", "status_boost", "status_view"] + funcs
-    
-    return sorted(funcs, key = prefix_val)
-
-class MastodonFuncCompleter(prompt_toolkit.completion.Completer):
+class MastodonFuncCompleter(Completer):
+    """
+    Completer that completes commands and also Mastodon usernames.
+    """
     def __init__(self, api):
-        self.base_completer = prompt_toolkit.contrib.completers.WordCompleter(get_func_names(), ignore_case = True, match_middle = True)
+        self.base_completer = WordCompleter(MastodonFuncCompleter.get_func_names(), ignore_case = True, match_middle = True)
         self.cached_usernames = {}
         self.complete_names_with = api
+
+    # Sorting... is complicated and phenomenological.
+    @staticmethod
+    def prefix_val(name):
+            val = 0
+            if not '_' in name:
+                val -= 100000
+            
+            if name.startswith('toot'):
+                val -= 11000
+            
+            if name.startswith('reply'):
+                val -= 15000
+            
+            if name.startswith('status'):
+                val -= 10000
+            
+            if name.startswith('account'):
+                val -= 9000
+            
+            if name.startswith('media'):
+                val -= 8000
+            
+            if name.startswith('timeline'):
+                val -= 7000
+            
+            if name.startswith('notifications'):
+                val -= 6000
+            
+            if name.startswith('follow'):
+                val -= 5000
+            
+            if name.startswith('domain'):
+                val -= 4000
+            
+            val = val + len(name)
+            return val
+
+    @staticmethod
+    def suffix_key(name):
+        if "_" in name:
+            return name[name.rfind("_") + 1:]
+        return name
+
+    @staticmethod
+    def overrride_key(name):
+        if name.endswith('reply'):
+            return 0
+        if name.endswith('boost'):
+            return 0
+        if name.endswith('expand'):
+            return 0
+        if name.endswith('toot'):
+            return 0
+        if name.endswith('view'):
+            return 0
+        if name.endswith('quit'):
+            return 0
+        return 1
+
+    @staticmethod
+    def combined_key(name):
+        return(MastodonFuncCompleter.overrride_key(name.text), MastodonFuncCompleter.suffix_key(name.text), MastodonFuncCompleter.prefix_val(name.text))
+
+    @staticmethod
+    def get_func_names():
+        funcs = dir(Mastodon)
+        funcs = list(filter(lambda x: not x.startswith("_"), funcs))
+        funcs = list(filter(lambda x: not x.endswith("_version"), funcs))    
+        funcs = list(filter(lambda x: not "stream_" in x, funcs))
+        funcs = list(filter(lambda x: not "fetch_" in x, funcs))
+        funcs = list(filter(lambda x: not "create_app" in x, funcs))
+        funcs = list(filter(lambda x: not "create_app" in x, funcs))
+        funcs = list(filter(lambda x: not "auth_request_url" in x, funcs))
+        funcs = ["quit", "status_reply", "status_expand", "status_boost", "status_view"] + funcs + ["help"]
         
+        return sorted(funcs, key = MastodonFuncCompleter.prefix_val)
+
     def get_completions(self, document, complete_event):
         completion_text = document.text.replace("-", "_")
-        comp_document = prompt_toolkit.document.Document(completion_text, document.cursor_position)
-        match_text = comp_document.get_word_before_cursor(WORD=True)
+        match_text = document.get_word_before_cursor(WORD=True)
         
         if match_text.startswith("@"):
             if not match_text in self.cached_usernames:
                 name_matches = self.complete_names_with.account_search(match_text[1:])
                 self.cached_usernames[match_text] = list(map(lambda x: "@" + x.acct, name_matches))
-            name_completer = prompt_toolkit.contrib.completers.WordCompleter(self.cached_usernames[match_text], ignore_case = True, match_middle = True, WORD=True)
-            return name_completer.get_completions(comp_document, complete_event)
+            name_completer = WordCompleter(self.cached_usernames[match_text], ignore_case = True, match_middle = True, WORD=True)
+            yield from name_completer.get_completions(document, complete_event)
         
-        base_completions = list(self.base_completer.get_completions(comp_document, complete_event))
-        base_completions = sorted(base_completions, key = combined_key)
+        base_completions = list(self.base_completer.get_completions(document, complete_event))
+        base_completions = sorted(base_completions, key = MastodonFuncCompleter.combined_key)
         
         best_matches = []
         good_matches = []
         for match in base_completions:
-            if suffix_key(match.text).startswith(match_text):
+            if MastodonFuncCompleter.suffix_key(match.text).startswith(match_text):
                 best_matches.append(match)
             else:
                 good_matches.append(match)
-        return(best_matches + good_matches)
+        for match in best_matches:
+            yield match
+        for match in good_matches:
+            yield match
 
-# Start up and run REPL
-def run_app():    
-    # Set stuff up
-    clear_screen()
-    cols, rows = shutil.get_terminal_size()
+# Read settings
+exec(open("./settings.py", 'rb').read().decode("utf-8"))
+
+# Don't want to use prompt_toolkits layouting, lets make it so we can draw
+# all the tokens ourselves!
+def create_bottom_repl_application(completer = None,  history = None,):
+    input_processors = [
+        ConditionalProcessor(
+            HighlightSearchProcessor(),
+             has_focus(SEARCH_BUFFER)
+        ),
+        HighlightSelectionProcessor(),
+        ConditionalProcessor(
+            AppendAutoSuggestion(), 
+            has_focus(DEFAULT_BUFFER) & ~is_done
+        ),
+        DisplayMultipleCursors(),
+        # Special "processor" that just stores the tokens so we can paint them ourselves
+        StoreTokens()
+    ]
     
+    buff = Buffer(
+        history = history,
+        completer = completer,
+        multiline = False,
+    )
+    layout = Layout(Window(
+        BufferControl(
+            input_processors = input_processors,
+            preview_search = True,
+            buffer = buff,
+        ),
+        height=Dimension.exact(1),
+        wrap_lines = False,
+    ))
+    default_key_bindings = load_key_bindings()
+    merged_key_bindings = merge_key_bindings([
+        default_key_bindings,
+        key_bindings
+    ])
+    app = Application(
+        layout = layout,
+        key_bindings = merged_key_bindings,
+        enable_page_navigation_bindings = True,
+        erase_when_done = True,
+        cursor = CursorShape.BLOCK,
+    )
+    set_eventloop_with_inputhook(app_update)
+    return app
+
+# Example run_app function:
+def run_app():
     global history
-    history = prompt_toolkit.history.FileHistory(".tootmage_history")
+    history = FileHistory(".tootmage_history")
+    completer = MastodonFuncCompleter(m)
+
+    app = create_bottom_repl_application(
+        completer = completer,
+        history = history
+    )
     
-    # REPL
     while True:
-        orig_command = read_line(history, key_registry)
+        # The app.run() will block until user hits Enter or we exit.
+        user_input = app.run()
+
+        # user_input is what they typed.
+        orig_command = user_input
+        command = user_input
+
+        if len(command.strip()) == 0:
+            continue
+
+        if command[0] == ";":
+            command = command[1:]
+            py_direct = True
+            expand_using = None
+        else:
+            py_direct = False
+            expand_using = None
+
         command = orig_command
         
         if len(command.strip()) == 0:
@@ -993,22 +1055,21 @@ def run_app():
             py_direct = True
         else:
             # Starts with # or . -> buffer ref
-            if command[0] in "#.": # TODO make these configurable
-                # TODO maybe convert things with dot notation
+            if command[0] in "#.":
                 pass
             else:
                 # Direct command -> autocomplete
                 command_parts = command.split(" ")
-                potential_commands = MastodonFuncCompleter(m).get_completions(
-                    prompt_toolkit.document.Document(command_parts[0]),
-                    prompt_toolkit.completion.CompleteEvent(False, True)
-                )
+                potential_commands = list(MastodonFuncCompleter(m).get_completions(
+                    Document(command_parts[0]),
+                    CompleteEvent(False, True)
+                ))
                 if len(potential_commands) > 0:
                     command_parts[0] = potential_commands[0].text
                 
                 # Dotify command part if unambiguously needed
                 if command_parts[0].startswith("status_"):
-                    if not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
+                    if len(command_parts) >= 2 and not (command_parts[1].startswith(".") or command_parts[1].startswith("#")):
                         command_parts[1] = "." + command_parts[1]
                 
                 # Special handling for boost, reply, expand commands
@@ -1065,10 +1126,43 @@ def run_app():
                     py_direct = True
                 
                 if command_parts[0] == "quit":
+                    print("Quitting...")
                     for thread in watched_streams:
                         thread[0].close()
                     sys.exit(0)
                 
+                if command_parts[0] == "help":
+                    help_text = """Base commands:
+    status_view <status> [<url_num>] - View status or URL or attachment in browser. Alias: v
+    status_expand <status> - Expand conversation. Alias: x
+    status_boost <status> - Boost status: Alias: b
+    status_reply <status> <text> - Reply to status: Alias: r
+    toot <text> - Post a toot: Alias: t
+    quit - Quit tootmage
+    help - Show this help
+
+Refering to results:
+    The following are automatically expanded everywhere:
+        .<buffer_num>.<result_num> - Result in specified buffer
+        #<result_num> - Result in currently active buffer
+    If specified on its own, the referred to status is displayed in the scratch buffer with expanded CW and images.
+                                                            
+Keyboard controls:
+    Enter - Execute command
+    Tab - Autocomplete
+    up/down - Browse command history                                      
+    PageUp/PageDown - Scroll currently active buffer
+    Ctrl+Left/Ctrl+Right - Switch to previous/next buffer
+    Ctrl+L - Repaint screen
+                                      
+Advanced commands:
+    <any Mastodon.py function> - Execute Mastodon.py function
+    ;<python code> - Execute python code directly
+"""
+                    for line in help_text.split("\n"):
+                        buffers[-1].print(theme["text"] + line)
+                    continue
+
                 # Build actual command
                 if  py_direct == False:
                     if expand_using == None:
@@ -1086,12 +1180,5 @@ def run_app():
         
         eval_command_thread(orig_command, command, buffers[-1], expand_using = expand_using)
 
-# Read settings
-exec(open("./settings.py").read())
-
-# Set the terminal to cbreak mode because 1) input is prompt-toolkit only anyways 2) less UI murdering
-term_attrs = termios.tcgetattr(sys.stdin.fileno())
-atexit.register(lambda: termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, term_attrs))
-tty.setcbreak(sys.stdin.fileno())
-
-run_app()
+if __name__ == "__main__":
+    run_app()

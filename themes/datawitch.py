@@ -38,5 +38,9 @@ glyphs = {
     'private': '\U0001f512', # lock
     'direct': '\U0001f4e7', # envelope
     'line': "═",
-    'avatar': "█"
+    'avatar': "█",
+    'image': '\U0001f5bc',
+    'video': '\U0001f3a5',
+    'audio': '\U0001f3b5',
+    'gifv': '\U0001f3a5',
 }
